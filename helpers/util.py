@@ -146,7 +146,7 @@ def get_bbox(boxes, cat_ids, classes, colors, without_lamp=False):
         if query_label == '_scene_' or query_label == 'floor':
             continue
         box_points = params_to_8points_3dfront(boxes[j], degrees=True)
-        trimesh_meshes.append(create_bbox_marker(box_points, tube_radius=0.02, color=next(colors)))
+        trimesh_meshes.extend(create_bbox_marker(box_points, tube_radius=0.02, color=next(colors)))
         # if query_label == 'nightstand':
         #     trimesh_meshes.pop()
         if query_label == 'lamp' and without_lamp:
@@ -387,7 +387,61 @@ def params_to_8points_3dfront(box, degrees=False):
     points += np.expand_dims(np.array([px.item(), py.item(), pz.item()]), 0)
     return points
 
-def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sections=4):
+def convert_to_up(points, from_up, to_up):
+    """
+    Convert points between 'Z' as up and 'Y' as up.
+
+    Args:
+        points (ndarray): Input points (Nx3).
+        from_up (str): Current up direction ('Z' or 'Y').
+        to_up (str): Desired up direction ('Z' or 'Y').
+
+    Returns:
+        ndarray: Points converted to the specified up direction.
+    """
+    if from_up == 'Z' and to_up == 'Y':
+        return points[:, [0, 2, 1]]  # Swap Y and Z
+    elif from_up == 'Y' and to_up == 'Z':
+        return points[:, [0, 2, 1]]  # Swap Y and Z
+    return points
+
+
+def apply_random_azimuthal_rotation(points, up_axis='Y'):
+    """
+    Apply a random azimuthal rotation (90-degree increments) around the specified up axis.
+
+    Args:
+        points (ndarray): Input points (Nx3).
+        up_axis (int): Index of the axis representing "up" (0: X, 1: Y, 2: Z).
+
+    Returns:
+        ndarray: Rotated points.
+    """
+    # Generate a random rotation angle (0, 90, 180, 270 degrees)
+    angles = [0, np.pi / 2, np.pi, 3 * np.pi / 2]
+    angle = random.choice(angles)
+
+    # Rotation matrices for each up axis
+    if up_axis == 'Z':  # Z-up
+        rotation_matrix = np.array([
+            [np.cos(angle), -np.sin(angle), 0],
+            [np.sin(angle),  np.cos(angle), 0],
+            [0,              0,             1]
+        ])
+    elif up_axis == 'Y':  # Y-up
+        rotation_matrix = np.array([
+            [np.cos(angle), 0, np.sin(angle)],
+            [0,             1, 0],
+            [-np.sin(angle), 0, np.cos(angle)]
+        ])
+    else:
+        raise ValueError("Unsupported up axis for azimuthal rotation")
+
+    # Rotate the points
+    return points @ rotation_matrix.T
+
+
+def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sections=4, maintain_aspect_ratio=False, up_direction='Y'):
     """Create a 3D mesh visualizing a bbox. It consists of 12 cylinders.
 
     Args:
@@ -399,6 +453,9 @@ def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sect
     Returns:
         trimesh.Trimesh: A mesh.
     """
+    # Convert BBOX corner points if necessary
+    corner_points = convert_to_up(corner_points, from_up='Y', to_up=up_direction)
+
     edges = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]]
     bbox_edge_list = []
     for edge in edges:
@@ -408,6 +465,43 @@ def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sect
     tmp = trimesh.util.concatenate(bbox_edge_list)
     tmp.visual.face_colors = color
 
+    pcd = trimesh.load("/home/ubuntu/scene/GaussianDreamer/outputs/gaussiandreamer-sd/a_panda_shaped_sofa@20241115-063627/save/shape.ply")
+    print('PCD\t\t',tmp)
+    # Compute minimal bounding box of the PCD
+    pcd_points = np.array(pcd.vertices)
+    pcd_points = convert_to_up(pcd_points, from_up='Z', to_up=up_direction)
+    
+    pcd_points = apply_random_azimuthal_rotation(pcd_points, up_direction)
+    
+    pcd_min = pcd_points.min(axis=0)
+    pcd_max = pcd_points.max(axis=0)
+    pcd_bbox_size = pcd_max - pcd_min
+
+    # Compute BBOX dimensions
+    bbox_min = np.min(corner_points, axis=0)
+    bbox_max = np.max(corner_points, axis=0)
+    bbox_size = bbox_max - bbox_min
+    bbox_center = (bbox_min + bbox_max) / 2
+
+    # Compute scale factors and transformation
+    if maintain_aspect_ratio:
+        # Scale factor: Minimum ratio across dimensions to maintain aspect ratio
+        scale_factor = min(bbox_size / pcd_bbox_size)
+    else:
+        # Scale factor: Independent scaling for each dimension
+        scale_factor = bbox_size / pcd_bbox_size
+
+    # Apply scaling
+    pcd_rescaled_points = (pcd_points - pcd_min) * scale_factor
+    
+    # Center the rescaled PCD in the BBOX
+    pcd_rescaled_center = pcd_rescaled_points.mean(axis=0)
+    translation = bbox_center - pcd_rescaled_center
+    pcd_transformed_points = pcd_rescaled_points + translation
+
+    # Create transformed PCD mesh
+    pcd_transformed = trimesh.points.PointCloud(pcd_transformed_points)
+
     # z axis to x axis
     # R = np.array([[0,0,1],[1,0,0],[0,1,0]]).reshape(3,3)
     # t =  np.array([0, 0, -1.12169998e-01]).reshape(3,1)
@@ -415,7 +509,7 @@ def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sect
     # T = np.r_[np.c_[np.eye(3), t], [[0, 0, 0, 1]]]
     # tmp.apply_transform(T)
 
-    return tmp
+    return [tmp, pcd_transformed]
 
 
 def params_to_8points_no_rot(box):

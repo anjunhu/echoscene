@@ -248,7 +248,8 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
         accuracy[k] = []
 
     for i, data in enumerate(test_dataloader_no_changes, 0):
-        print(data['scan_id'])
+        print(data['scan_id']); print(data.keys()); 
+        if i > 0: break
 
         try:
             dec_objs, dec_triples = data['decoder']['objs'], data['decoder']['tripltes']
@@ -373,7 +374,7 @@ def evaluate():
         large=modelArgs['large'],
         room_type=args.room_type)
 
-    modeltype_ = modelArgs['network_type']
+    modeltype_ = "echolayout" if args.render_type == "onlybox" else modelArgs['network_type'] 
     modelArgs['store_path'] = os.path.join(args.exp, "vis", args.epoch)
     replacelatent_ = modelArgs['replace_latent'] if 'replace_latent' in modelArgs else None
     with_changes_ = modelArgs['with_changes'] if 'with_changes' in modelArgs else None
@@ -388,7 +389,7 @@ def evaluate():
                 with_changes=with_changes_, residual=modelArgs['residual'], gconv_pooling=modelArgs['pooling'], clip=modelArgs['with_CLIP'],
                 with_angles=modelArgs['with_angles'], separated=modelArgs['separated'])
     model.diff.optimizer_ini()
-    model.load_networks(exp=args.exp, epoch=args.epoch, restart_optim=True, load_shape_branch=args.gen_shape)
+    model.load_networks(exp=args.exp, epoch=args.epoch, restart_optim=True, load_shape_branch=args.gen_shape, strict=False)
     if torch.cuda.is_available():
         model = model.cuda()
 

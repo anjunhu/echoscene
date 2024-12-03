@@ -119,11 +119,19 @@ def create_bg(box_and_angle, cat_ids, classes, type='floor'):
 
 
 
-def render_img(trimesh_meshes):
+def render_img(trimesh_objects):
     scene = pyrender.Scene()
     renderer = pyrender.OffscreenRenderer(viewport_width=256, viewport_height=256)
-    for tri_mesh in trimesh_meshes:
-        pyrender_mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=False)
+    for obj in trimesh_objects:
+        if isinstance(obj, trimesh.Trimesh):
+            pyrender_mesh = pyrender.Mesh.from_trimesh(obj, smooth=False)
+        elif isinstance(obj, trimesh.PointCloud):
+            # Handle PointCloud objects
+            vertices = obj.vertices
+            colors = obj.colors if hasattr(obj, "colors") else [0, 0, 0, 1]
+            pyrender_mesh = pyrender.Mesh.from_points(vertices, colors=colors, point_size=5)
+        else:
+            raise TypeError(f"Unsupported object type: {type(obj)}")
         scene.add(pyrender_mesh)
 
     camera = pyrender.PerspectiveCamera(yfov=np.pi / 2)
@@ -216,10 +224,20 @@ def render_box(scene_id, cats, predBoxes, predAngles, datasize='small', classes=
         for i, mesh in enumerate(trimesh_meshes):
             mesh.export(os.path.join(mesh_dir_shifted,  f"{i}.obj"))
     scene = trimesh.Scene(trimesh_meshes)
+    for name, geom in scene.geometry.items():
+        if isinstance(geom, trimesh.PointCloud):
+            print(f"Geometry Name: {name}")
+            if hasattr(geom, "colors") and geom.colors is not None:
+                print(f"Colors:\n{geom.colors}")
+            else:
+                print("No colors found for this PointCloud.")
+        else:
+            print(f"Geometry Name: {name} is not a PointCloud.")
     scene_path = os.path.join(store_path, render_type)
     if len(str_append) > 0:
         render_type += str_append
     os.makedirs(scene_path, exist_ok=True)
+    scene.export(os.path.join(scene_path, "{0}_{1}.ply".format(scene_id[0], render_type)))
     scene.export(os.path.join(scene_path, "{0}_{1}.glb".format(scene_id[0], render_type)))
 
     if visual:

@@ -1,8 +1,8 @@
-matplotlib==3.7.2
-numpy==1.23
-scipy==1.10
-tqdm==4.65.0
-wheel==0.38.4
+matplotlib 
+numpy==1.26
+scipy 
+tqdm 
+wheel 
 pyrender
 seaborn
 trimesh
@@ -11,5 +11,5 @@ PyMCubes
 imageio
 scikit-image
 fvcore
-opencv-python==4.8.0.76
-pyyaml==6.0
+opencv-python 
+pyyaml 

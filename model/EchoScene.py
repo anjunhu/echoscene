@@ -142,17 +142,22 @@ class Sg2ScDiffModel(nn.Module):
 
     def init_encoder(self, objs, triples, enc_text_feat, enc_rel_feat):
         O, T = objs.size(0), triples.size(0)
+        print("Sg2ScDiffModel.init_encoder\nobjs.shape, triples.shape", objs.shape, triples.shape)
         s, p, o = triples.chunk(3, dim=1)  # All have shape (T, 1)
         s, p, o = [x.squeeze(1) for x in [s, p, o]]  # Now have shape (T,)
         edges = torch.stack([s, o], dim=1)  # Shape is (T, 2)
 
         obj_embed = self.obj_embeddings_ec(objs)
         pred_embed = self.pred_embeddings_ec(p)
+        print("Sg2ScDiffModel.init_encoder\nobj_embed, pred_embed", obj_embed.shape, pred_embed.shape)
+        
         if self.clip:
             obj_embed = torch.cat([enc_text_feat, obj_embed], dim=1)
             pred_embed = torch.cat([enc_rel_feat, pred_embed], dim=1)
+        print("Sg2ScDiffModel.init_encoder\nenc_text_feat, enc_rel_feat", enc_text_feat.shape, enc_rel_feat.shape)
 
         latent_obj_f, latent_pred_f = self.gconv_net_ec(obj_embed, pred_embed, edges)
+        print("Sg2SCDiffModel.init_encoder\nlatent_obj_f, latent_pred_f", latent_obj_f.shape,  latent_pred_f.shape)
 
         return obj_embed, pred_embed, latent_obj_f, latent_pred_f
 
@@ -390,6 +395,7 @@ class Sg2ScDiffModel(nn.Module):
             obj_embed, pred_embed, latent_obj_vecs, latent_pred_vecs = self.init_encoder(dec_objs, dec_triplets,
                                                                                          dec_text_feat,
                                                                                          dec_rel_feat)
+            print("Latent Context Graph", obj_embed.shape, pred_embed.shape, latent_obj_vecs.shape, latent_pred_vecs.shape)
             change_repr = []
             for i in range(len(latent_obj_vecs)):
                 noisechange = np.zeros(self.embedding_dim)
@@ -418,6 +424,28 @@ class Sg2ScDiffModel(nn.Module):
                 gen_sdf = self.ShapeDiff.rel2shape(shape_diff_dict)
 
             return {'shapes': gen_sdf}, gen_box_dict
+
+    def sampleBoxes(self, dec_objs, dec_triplets, dec_text_feat, dec_rel_feat):
+        with torch.no_grad():
+            obj_embed, pred_embed, latent_obj_vecs, latent_pred_vecs = self.init_encoder(dec_objs, dec_triplets,
+                                                                                         dec_text_feat,
+                                                                                         dec_rel_feat)
+            print("Latent Context Graph", obj_embed.shape, pred_embed.shape, latent_obj_vecs.shape, latent_pred_vecs.shape)
+            change_repr = []
+            for i in range(len(latent_obj_vecs)):
+                noisechange = np.zeros(self.embedding_dim)
+                change_repr.append(torch.from_numpy(noisechange).float().cuda())
+            change_repr = torch.stack(change_repr, dim=0)
+            latent_obj_vecs_ = torch.cat([latent_obj_vecs, change_repr], dim=1)
+            latent_obj_vecs_, pred_vecs_, obj_embed_, pred_embed_ = self.manipulate(latent_obj_vecs_, dec_objs,
+                                                                                    dec_triplets, dec_text_feat,
+                                                                                    dec_rel_feat)  # normal message passing
+
+            box_diff_dict = self.prepare_boxes(dec_triplets, obj_embed_, relation_cond=latent_obj_vecs_)
+
+            self.LayoutDiff.set_input(box_diff_dict)
+
+            return self.LayoutDiff.generate_layout_sg(box_dim=self.diff_cfg.layout_branch.denoiser_kwargs.in_channels)
 
     def sample_with_changes(self, enc_objs, enc_triples, enc_text_feat, enc_rel_feat, dec_objs, dec_triplets, dec_text_feat, dec_rel_feat, manipulated_nodes, gen_shape=False):
         with torch.no_grad():
