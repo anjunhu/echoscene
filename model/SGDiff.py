@@ -85,6 +85,8 @@ class SGDiff(nn.Module):
 
 
     def sample_box_and_shape(self, dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat, gen_shape=False):
+        print("sample_box_and_shape", self.type_ )
+        layout_dict = self.diff.sampleBoxes(dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat)
         if self.type_ == 'echolayout':
             layout_dict = self.diff.sampleBoxes(dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat)
             return layout_dict

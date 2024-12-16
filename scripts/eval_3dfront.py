@@ -15,6 +15,7 @@ parent_dir = Path(__file__).resolve().parent.parent
 sys.path.append(str(parent_dir))
 from model.SGDiff import SGDiff
 from dataset.threedfront_dataset import ThreedFrontDatasetSceneGraph
+from dataset.anyscene_dataset import AnySceneDatasetSceneGraph
 from helpers.util import bool_flag, preprocess_angle2sincos, batch_torch_destandardize_box_params, descale_box_params, postprocess_sincos2arctan, sample_points
 from helpers.metrics_3dfront import validate_constrains, validate_constrains_changes, estimate_angular_std
 from helpers.visualize_scene import render_full, render_box
@@ -248,8 +249,7 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
         accuracy[k] = []
 
     for i, data in enumerate(test_dataloader_no_changes, 0):
-        print(data['scan_id']); print(data.keys()); 
-        if i > 0: break
+        print(); print(data['scan_id']); print(data.keys()); 
 
         try:
             dec_objs, dec_triples = data['decoder']['objs'], data['decoder']['tripltes']
@@ -286,7 +286,9 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
 
 
         if args.visualize:
-            classes = sorted(list(set(vocab['object_idx_to_name'])))
+            print(data.keys())
+            classes = data['objs_text'][0]
+            print(classes, dec_objs)
             # layout and shape visualization through open3d
             print("rendering", [classes[i].strip('\n') for i in dec_objs])
             if model.type_ == 'echolayout':
@@ -304,10 +306,12 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
         all_pred_angles.append(angles_pred.cpu().detach())
         # compute constraints accuracy through simple geometric rules
         accuracy = validate_constrains(dec_triples, boxes_pred_den, angles_pred, None, model.vocab, accuracy)
+        if i > -1: break
 
     keys = list(accuracy.keys())
+    os.makedirs(modelArgs['store_path'], exist_ok=True)
     file_path_for_output = os.path.join(modelArgs['store_path'], f'{test_dataset.eval_type}_accuracy_analysis.txt')
-    with open(file_path_for_output, 'w') as file:
+    with open(file_path_for_output, 'w+') as file:
         for dic, typ in [(accuracy, "acc")]:
             lr_mean = np.mean([np.mean(dic[keys[0]]), np.mean(dic[keys[1]])])
             fb_mean = np.mean([np.mean(dic[keys[2]]), np.mean(dic[keys[3]])])
@@ -337,32 +341,8 @@ def evaluate():
     with open(argsJson) as j:
         modelArgs = json.load(j)
     normalized_file = os.path.join(args.dataset, 'centered_bounds_{}_trainval.txt').format(modelArgs['room_type'])
-    test_dataset_rels_changes = ThreedFrontDatasetSceneGraph(
-        root=args.dataset,
-        split='val_scans',
-        use_scene_rels=modelArgs['use_scene_rels'],
-        with_changes=True,
-        eval=True,
-        eval_type='relationship',
-        with_CLIP=modelArgs['with_CLIP'],
-        use_SDF=modelArgs['with_SDF'],
-        large=modelArgs['large'],
-        room_type=args.room_type,
-        recompute_clip=False)
 
-    test_dataset_addition_changes = ThreedFrontDatasetSceneGraph(
-        root=args.dataset,
-        split='val_scans',
-        use_scene_rels=modelArgs['use_scene_rels'],
-        with_changes=True,
-        eval=True,
-        eval_type='addition',
-        with_CLIP=modelArgs['with_CLIP'],
-        use_SDF=modelArgs['with_SDF'],
-        large=modelArgs['large'],
-        room_type=args.room_type)
-
-    test_dataset_no_changes = ThreedFrontDatasetSceneGraph(
+    test_dataset = AnySceneDatasetSceneGraph(
         root=args.dataset,
         split='val_scans',
         use_scene_rels=modelArgs['use_scene_rels'],
@@ -383,9 +363,9 @@ def evaluate():
     # instantiate the model
     diff_opt = modelArgs['diff_yaml']
     diff_cfg = OmegaConf.load(diff_opt)
-    diff_cfg.layout_branch.diffusion_kwargs.train_stats_file = test_dataset_no_changes.box_normalized_stats
+    diff_cfg.layout_branch.diffusion_kwargs.train_stats_file = test_dataset.box_normalized_stats
     diff_cfg.layout_branch.denoiser_kwargs.using_clip = modelArgs['with_CLIP']
-    model = SGDiff(type=modeltype_, diff_opt=diff_cfg, vocab=test_dataset_no_changes.vocab, replace_latent=replacelatent_,
+    model = SGDiff(type=modeltype_, diff_opt=diff_cfg, vocab=test_dataset.vocab, replace_latent=replacelatent_,
                 with_changes=with_changes_, residual=modelArgs['residual'], gconv_pooling=modelArgs['pooling'], clip=modelArgs['with_CLIP'],
                 with_angles=modelArgs['with_angles'], separated=modelArgs['separated'])
     model.diff.optimizer_ini()
@@ -396,17 +376,9 @@ def evaluate():
     model = model.eval()
     cat2objs = None
 
-    print('\nEditing Mode - Additions')
-    reseed(47)
-    # validate_constrains_loop_w_changes(modelArgs, test_dataset_addition_changes, model, normalized_file=normalized_file, bin_angles=modelArgs['bin_angle'], cat2objs=cat2objs, datasize='large' if modelArgs['large'] else 'small', gen_shape=args.gen_shape)
-
-    reseed(47)
-    print('\nEditing Mode - Relationship changes')
-    # validate_constrains_loop_w_changes(modelArgs, test_dataset_rels_changes, model,  normalized_file=normalized_file, bin_angles=modelArgs['bin_angle'], cat2objs=cat2objs, datasize='large' if modelArgs['large'] else 'small', gen_shape=args.gen_shape)
-
     reseed(47)
     print('\nGeneration Mode')
-    validate_constrains_loop(modelArgs, test_dataset_no_changes, model, epoch=args.epoch, normalized_file=normalized_file, cat2objs=cat2objs, datasize='large' if modelArgs['large'] else 'small', gen_shape=args.gen_shape)
+    validate_constrains_loop(modelArgs, test_dataset, model, epoch=args.epoch, normalized_file=normalized_file, cat2objs=cat2objs, datasize='large' if modelArgs['large'] else 'small', gen_shape=args.gen_shape)
 
 if __name__ == "__main__":
     print(torch.__version__)

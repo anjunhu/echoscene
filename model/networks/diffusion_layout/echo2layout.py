@@ -117,6 +117,8 @@ class EchoToLayout(Module):
         triples = self.preds
 
         samples = self.sample(box_dim, batch_size=len(obj_embed), obj_embed=obj_embed, obj_triples=triples, text=text, rel=rel, ret_traj=ret_traj, ddim=ddim, clip_denoised=clip_denoised, batch_seeds=batch_seeds)
+        
+        print("Raw Output Shape from GNN:\ngenerate_layout_sg\n", samples.shape)
         samples_dict = {
             "sizes": samples[:, 0:self.size_dim].contiguous(),
             "translations": samples[:, self.size_dim:self.size_dim + self.translation_dim].contiguous(),

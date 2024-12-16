@@ -1,3 +1,4 @@
+import sys
 import random
 import torch.nn as nn
 import torch.optim as optim
@@ -5,6 +6,9 @@ from model.graph import GraphTripleConvNet, _init_weights, make_mlp
 from model.networks.diffusion_layout.echo2layout import EchoToLayout
 import numpy as np
 from helpers.lr_scheduler import *
+
+def randint_like(input):
+    return torch.randint(torch.min(input), torch.max(input), size=input.shape, dtype=input.dtype, device=input.device)
 
 class Sg2BoxDiffModel(nn.Module):
     def __init__(self, vocab, diff_opt, diffusion_bs=8, embedding_dim=128, batch_size=32,
@@ -28,12 +32,12 @@ class Sg2BoxDiffModel(nn.Module):
         add_dim = 0
         if self.clip:
             add_dim = 512
-        self.obj_classes_grained = list(set(vocab['object_idx_to_name_grained']))
+        # self.obj_classes_grained = list(set(vocab['object_idx_to_name_grained']))
         self.edge_list = list(set(vocab['pred_idx_to_name']))
-        self.obj_classes_list = list(set(vocab['object_idx_to_name']))
-        self.classes = dict(zip(sorted(self.obj_classes_list),range(len(self.obj_classes_list))))
-        self.classes_r = dict(zip(self.classes.values(), self.classes.keys()))
-        num_objs = len(self.obj_classes_list)
+        # self.obj_classes_list = list(set(vocab['object_idx_to_name']))
+        # self.classes = dict(zip(sorted(self.obj_classes_list),range(len(self.obj_classes_list))))
+        # self.classes_r = dict(zip(self.classes.values(), self.classes.keys()))
+        num_objs = 14 #len(self.obj_classes_list)
         num_preds = len(self.edge_list)
 
         # build graph encoder and manipulator
@@ -86,7 +90,7 @@ class Sg2BoxDiffModel(nn.Module):
         # layout branch
         self.LayoutDiff = EchoToLayout(self.diff_cfg)
 
-        # initialization
+        # initiaqgqlization
         self.lr_init = self.diff_cfg.hyper.lr_init
         self.lr_step = self.diff_cfg.hyper.lr_step
         self.lr_evo = self.diff_cfg.hyper.lr_evo
@@ -123,21 +127,23 @@ class Sg2BoxDiffModel(nn.Module):
         print("Sg2BoxDiffModel.init_encoder\nobjs.shape, triples.shape", objs.shape, triples.shape)
         s, p, o = triples.chunk(3, dim=1)  # All have shape (T, 1)
         s, p, o = [x.squeeze(1) for x in [s, p, o]]  # Now have shape (T,)
-        edges = torch.rand_like(torch.stack([s, o], dim=1))  # Shape is (T, 2)
-
-        obj_embed = torch.rand_like(self.obj_embeddings_ec(objs))
+        edges = torch.stack([s, o], dim=1)  # Shape is (T, 2)
+        # edges = torch.randint_like(edges, torch.min(edges), torch.max(edges))
+        
+        obj_embed = self.obj_embeddings_ec(objs)
         pred_embed = self.pred_embeddings_ec(p)
         # print(objs, p)
-        print("!!!Sg2BoxDiffModel.init_encoder\nobj_embed, pred_embed", obj_embed.shape, pred_embed.shape)
+        print("!!!Sg2BoxDiffModel.init_encoder\nobj_embed, pred_embed", enc_text_feat.shape, obj_embed.shape, pred_embed.shape)
         
         if self.clip:
-            obj_embed = torch.rand_like(torch.cat([enc_text_feat, obj_embed], dim=1))
-            pred_embed = torch.rand_like(torch.cat([enc_rel_feat, pred_embed], dim=1))
+            obj_embed = torch.cat([enc_text_feat, obj_embed], dim=1)
+            pred_embed = torch.cat([enc_rel_feat, pred_embed], dim=1)
         print("Sg2BoxDiffModel.init_encoder\nenc_text_feat, enc_rel_feat", enc_text_feat.shape, enc_rel_feat.shape)
 
         latent_obj_f, latent_pred_f = self.gconv_net_ec(obj_embed, pred_embed, edges)
         print("Sg2BoxDiffModel.init_encoder\nlatent_obj_f, latent_pred_f", latent_obj_f.shape,  latent_pred_f.shape)
-
+        
+        # return torch.rand_like(obj_embed), torch.rand_like(pred_embed), torch.rand_like(latent_obj_f), torch.rand_like(latent_pred_f)
         return obj_embed, pred_embed, latent_obj_f, latent_pred_f
 
     def layout_encoder(self, latent_obj_vec, obj_embs, pred_embs, triples):
@@ -297,7 +303,8 @@ class Sg2BoxDiffModel(nn.Module):
     def sampleBoxes(self, dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat):
         with torch.no_grad():
             obj_embed, pred_embed, latent_obj_vecs, latent_pred_vecs = self.init_encoder(dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat)
-            print("Latent Context Graph", obj_embed.shape, pred_embed.shape, latent_obj_vecs.shape, latent_pred_vecs.shape)
+            obj_embed = torch.randn_like(obj_embed)
+            print("\n\nSg2BoxDiffModel.sampleBoxes\nLatent Context Graph", obj_embed.shape, pred_embed.shape, latent_obj_vecs.shape, latent_pred_vecs.shape)
             
             change_repr = []
             for i in range(len(latent_obj_vecs)):
@@ -308,11 +315,13 @@ class Sg2BoxDiffModel(nn.Module):
             latent_obj_vecs_, pred_vecs_, obj_embed_, pred_embed_ = self.manipulate(latent_obj_vecs_, dec_objs, dec_triplets, encoded_dec_text_feat, encoded_dec_rel_feat) # normal message passing
 
             # relation embeddings -> diffusion
-            box_diff_dict = self.prepare_input(dec_triplets, obj_embed_, relation_cond=latent_obj_vecs_)
+            box_diff_dict = self.prepare_input(dec_triplets, obj_embed_, relation_cond=torch.rand_like(latent_obj_vecs_))
 
             self.LayoutDiff.set_input(box_diff_dict)
 
-            return self.LayoutDiff.generate_layout_sg(box_dim=self.diff_cfg.layout_branch.denoiser_kwargs.in_channels)
+            layout = self.LayoutDiff.generate_layout_sg(box_dim=self.diff_cfg.layout_branch.denoiser_kwargs.in_channels)
+            print("\n\nSg2BoxDiffModel.sampleBoxes\nOutput Layout\n", layout['sizes'].shape, layout['translations'].shape, layout['angles'].shape)
+            return layout
 
     def sampleBoxes_with_changes(self, enc_objs, enc_triples, enc_text_feat, enc_rel_feat, dec_objs,
                                  dec_triples, dec_text_feat, dec_rel_feat, manipulated_nodes):

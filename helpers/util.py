@@ -1,5 +1,5 @@
-import os
-
+import io, os, sys
+import cProfile, pstats
 import torch
 import numpy as np
 import trimesh
@@ -8,6 +8,7 @@ import glob
 import random
 import pytorch3d
 from pytorch3d.structures import Meshes
+from plyfile import PlyData, PlyElement
 
 from model.diff_utils.util_3d import sdf_to_mesh
 
@@ -137,21 +138,55 @@ def get_database_objects(boxes, datasize, cat_ids, classes, mesh_dir, render_box
 
     return lamp_mesh_list, trimesh_meshes, raw_meshes
 
-def get_bbox(boxes, cat_ids, classes, colors, without_lamp=False):
+def get_bbox(boxes, cat_ids, classes, scene_asset_dir, store_path, colors, without_lamp=False):
     trimesh_meshes = []
     colors = iter(colors)
     lamp_mesh_list=[]
+    splats_data = []
+    profiler = cProfile.Profile() 
+    
     for j in range(0, boxes.shape[0]):
         query_label = classes[cat_ids[j]].strip('\n')
-        if query_label == '_scene_' or query_label == 'floor':
+        if query_label == '_scene_' or query_label == 'floor' or query_label == 'none':
             continue
         box_points = params_to_8points_3dfront(boxes[j], degrees=True)
-        trimesh_meshes.extend(create_bbox_marker(box_points, tube_radius=0.02, color=next(colors)))
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        profiler.enable()
+        box_wireframes, pcds, splats = create_bbox_marker(box_points, scene_asset_dir=scene_asset_dir, cat_id=cat_ids[j], tube_radius=0.02, color=next(colors))
+        profiler.disable()
+        
+        trimesh_meshes.extend([box_wireframes, pcds])
         # if query_label == 'nightstand':
         #     trimesh_meshes.pop()
+        if splats is not None:
+            splats["cat_id"] = cat_ids[j]
+            splats_data.append(splats)
         if query_label == 'lamp' and without_lamp:
             lamp_mesh_list.append(trimesh_meshes.pop())
+    
+    # Save or print the profiling results after the loop
+    s = io.StringIO()
+    sortby = 'cumulative'
+    ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
+    ps.print_stats()
+    print(s.getvalue())  # Print the profiling result to the console, or save to a file
 
+    for s in splats_data:
+        print(f"Points: {s['points'].shape}, Opacities: {s['opacities'].shape}, Features DC: {s['features_dc'].shape}, Scaling: {s['scaling'].shape}, Rotation: {s['rotation'].shape}, Group: {s['cat_id'].shape}")
+    # Combine all splats into a single GS-compliant .ply file
+    combined_points = np.concatenate([s["points"] for s in splats_data])
+    combined_opacities = np.concatenate([s["opacities"] for s in splats_data])
+    combined_features_dc = np.concatenate([s["features_dc"] for s in splats_data])
+    combined_scales = np.concatenate([s["scaling"] for s in splats_data])
+    combined_rotations = np.concatenate([s["rotation"] for s in splats_data])
+    combined_groups = np.concatenate([[s["cat_id"]] * len(s["points"]) for s in splats_data]) if not isinstance(s["cat_id"], np.ndarray) else np.concatenate([s["cat_id"] for s in splats_data]) 
+    print(f"Combined Points: {combined_points.shape}, Opacities: {combined_opacities.shape}, Features DC: {combined_features_dc.shape}, Scaling: {combined_scales.shape}, Group: {combined_groups.shape}")
+  
+    combined_output_path = os.path.join(store_path, "combined_gs.ply")
+    save_gs_compliant_ply(combined_output_path, combined_points, combined_opacities,
+                                      combined_features_dc, None, combined_scales, combined_rotations, combined_groups)
 
     return lamp_mesh_list, trimesh_meshes
 
@@ -400,10 +435,27 @@ def convert_to_up(points, from_up, to_up):
         ndarray: Points converted to the specified up direction.
     """
     if from_up == 'Z' and to_up == 'Y':
-        return points[:, [0, 2, 1]]  # Swap Y and Z
+        R_up = np.array([
+            [1, 0, 0],
+            [0, 0, 1],
+            [0, 1, 0]
+        ])  # Swap Y and Z
+        points_transformed = points @ R_up.T    
+        assert np.allclose(points_transformed, points[:, [0, 2, 1]])  # Swap Y and Z
+    
     elif from_up == 'Y' and to_up == 'Z':
-        return points[:, [0, 2, 1]]  # Swap Y and Z
-    return points
+        R_up = np.array([
+            [1, 0, 0],
+            [0, 0, 1],
+            [0, 1, 0]
+        ])  # Swap Y and Z
+        points_transformed = points @ R_up.T
+        assert np.allclose(points_transformed, points[:, [0, 2, 1]])  # Swap Y and Z
+    else:
+        points_transformed = points
+        R_up = np.eye(3)
+        
+    return points_transformed, R_up
 
 
 def apply_random_azimuthal_rotation(points, up_axis='Y'):
@@ -417,11 +469,9 @@ def apply_random_azimuthal_rotation(points, up_axis='Y'):
     Returns:
         ndarray: Rotated points.
     """
-    # Generate a random rotation angle (0, 90, 180, 270 degrees)
     angles = [0, np.pi / 2, np.pi, 3 * np.pi / 2]
     angle = random.choice(angles)
 
-    # Rotation matrices for each up axis
     if up_axis == 'Z':  # Z-up
         rotation_matrix = np.array([
             [np.cos(angle), -np.sin(angle), 0],
@@ -438,78 +488,331 @@ def apply_random_azimuthal_rotation(points, up_axis='Y'):
         raise ValueError("Unsupported up axis for azimuthal rotation")
 
     # Rotate the points
-    return points @ rotation_matrix.T
+    return points @ rotation_matrix.T, rotation_matrix
 
 
-def create_bbox_marker(corner_points, color=[0, 0, 255], tube_radius=0.002, sections=4, maintain_aspect_ratio=False, up_direction='Y'):
-    """Create a 3D mesh visualizing a bbox. It consists of 12 cylinders.
+def scale_gs_to_bbox(points, bbox_size, pcd_bbox_size, maintain_aspect_ratio):
+    """
+    Scale points using a constructed scaling matrix S.
 
     Args:
-        corner_points
-        color (list, optional): RGB values of marker. Defaults to [0, 0, 255].
-        tube_radius (float, optional): Radius of cylinders. Defaults to 0.001.
-        sections (int, optional): Number of sections of each cylinder. Defaults to 4.
+        points (ndarray): Input points (Nx3).
+        bbox_size (ndarray): Desired bounding box size (3,).
+        pcd_bbox_size (ndarray): Current PCD bounding box size (3,).
+        maintain_aspect_ratio (bool): Whether to maintain the aspect ratio.
 
     Returns:
-        trimesh.Trimesh: A mesh.
+        tuple:
+            - ndarray: Scaled points.
+            - ndarray: Scaling matrix S (3x3).
     """
-    # Convert BBOX corner points if necessary
-    corner_points = convert_to_up(corner_points, from_up='Y', to_up=up_direction)
+    if maintain_aspect_ratio:
+        scale_factor = min(bbox_size / pcd_bbox_size)  # Isotropic scaling
+        S = np.eye(3) * scale_factor
+    else:
+        scale_factors = bbox_size / pcd_bbox_size  # Anisotropic scaling
+        S = np.diag(scale_factors)
 
+    points_scaled = points @ S.T  # Apply scaling using the scaling matrix
+    return points_scaled, S
+
+
+def transform_gaussian_parameters(R_up, R_az, S, T, xyz, scales, rots):
+    """
+    Apply the transformations R_up, R_az, S, and T to Gaussian parameters.
+
+    Args:
+        R_up (ndarray): Rotation matrix for converting to up direction (3x3).
+        R_az (ndarray): Random azimuthal rotation matrix (3x3).
+        S (ndarray): Scaling matrix (3x3).
+        T (ndarray): Translation vector (3,).
+        xyz (ndarray): Points (Nx3).
+        scales (ndarray): Gaussian scales (Nx3).
+        rots (ndarray): Gaussian rotations as quaternions (Nx4).
+
+    Returns:
+        tuple:
+            - xyz (ndarray): Transformed points (Nx3).
+            - scales (ndarray): Transformed scales (Nx3).
+            - rots (ndarray): Transformed rotations as quaternions (Nx4).
+    """
+    # Apply R_up to points
+    xyz = xyz @ R_up.T
+    
+    # Apply R_az to points
+    xyz = xyz @ R_az.T
+
+    # Apply scaling
+    xyz = xyz @ S.T
+    scales = scales + np.log(S.diagonal())
+
+    # Apply translation
+    xyz += T
+
+    # Update rotations (as quaternions)
+    def quat_multiply(q1, q2):
+        """Multiply two quaternions."""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        return np.array([
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        ])
+
+    # Convert R_up and R_az to quaternions
+    def rotmat_to_quat(rotmat):
+        """Convert a rotation matrix to a quaternion."""
+        q = np.empty(4)
+        trace = np.trace(rotmat)
+        if trace > 0:
+            s = 0.5 / np.sqrt(trace + 1.0)
+            q[0] = 0.25 / s
+            q[1] = (rotmat[2, 1] - rotmat[1, 2]) * s
+            q[2] = (rotmat[0, 2] - rotmat[2, 0]) * s
+            q[3] = (rotmat[1, 0] - rotmat[0, 1]) * s
+        else:
+            if rotmat[0, 0] > rotmat[1, 1] and rotmat[0, 0] > rotmat[2, 2]:
+                s = 2.0 * np.sqrt(1.0 + rotmat[0, 0] - rotmat[1, 1] - rotmat[2, 2])
+                q[0] = (rotmat[2, 1] - rotmat[1, 2]) / s
+                q[1] = 0.25 * s
+                q[2] = (rotmat[0, 1] + rotmat[1, 0]) / s
+                q[3] = (rotmat[0, 2] + rotmat[2, 0]) / s
+            elif rotmat[1, 1] > rotmat[2, 2]:
+                s = 2.0 * np.sqrt(1.0 + rotmat[1, 1] - rotmat[0, 0] - rotmat[2, 2])
+                q[0] = (rotmat[0, 2] - rotmat[2, 0]) / s
+                q[1] = (rotmat[0, 1] + rotmat[1, 0]) / s
+                q[2] = 0.25 * s
+                q[3] = (rotmat[1, 2] + rotmat[2, 1]) / s
+            else:
+                s = 2.0 * np.sqrt(1.0 + rotmat[2, 2] - rotmat[0, 0] - rotmat[1, 1])
+                q[0] = (rotmat[1, 0] - rotmat[0, 1]) / s
+                q[1] = (rotmat[0, 2] + rotmat[2, 0]) / s
+                q[2] = (rotmat[1, 2] + rotmat[2, 1]) / s
+                q[3] = 0.25 * s
+        return q / np.linalg.norm(q)
+
+    q_up = rotmat_to_quat(R_up)
+    q_az = rotmat_to_quat(R_az)
+    combined_quaternion = quat_multiply(q_up, q_az)  # Combine R_up and R_az
+
+    # Apply the quaternion to all rots
+    rots = np.array([quat_multiply(r, combined_quaternion) for r in rots])
+    rots = rots / np.linalg.norm(rots, axis=-1, keepdims=True)  # Normalize
+
+    return xyz, scales, rots
+
+
+def get_dirname_by_number(root_dir, number):
+    print(root_dir, number)
+    prefix = f"{number}_"
+    for dirname in os.listdir(root_dir):
+        if dirname.startswith(prefix):
+            return dirname
+    return os.listdir(root_dir)[0]
+
+def transform_gaussian_splats(xyz, scaling, rotation, bbox_size, bbox_center, maintain_aspect_ratio):
+    # Compute PCD min and max
+    pcd_min = xyz.min(axis=0)
+    pcd_max = xyz.max(axis=0)
+    pcd_bbox_size = pcd_max - pcd_min
+
+    # Compute scale factors
+    if maintain_aspect_ratio:
+        scale_factor = min(bbox_size / pcd_bbox_size)
+    else:
+        scale_factor = bbox_size / pcd_bbox_size
+
+    # Convert xyz to a torch tensor
+    xyz_torch = torch.tensor(xyz, dtype=torch.float)
+
+    # Compute the current center of the Gaussian splats
+    current_center = (torch.max(xyz_torch, dim=0).values + torch.min(xyz_torch, dim=0).values) / 2
+
+    # Compute the translation to align the center with the bounding box center
+    translation = torch.tensor(bbox_center, dtype=torch.float) - current_center
+
+    # Apply the translation to the points
+    transformed_points = xyz_torch + translation
+
+    # The scaling remains unchanged!!
+    rescaled_scaling = scaling
+
+    return transformed_points, rescaled_scaling
+
+
+def save_gs_compliant_ply(output_path, points, opacities, features_dc, features_rest, scaling, rotation, cat_id):
+    print("save_gs_compliant_ply")
+    vertex_data = []
+    
+    if not isinstance(cat_id, np.ndarray):
+        cat_id = np.full(opacities.shape, cat_id)
+    
+    for i in range(len(points)):
+        vertex = (
+            points[i][0], points[i][1], points[i][2],
+            opacities[i],
+            features_dc[i][0], features_dc[i][1], features_dc[i][2],
+            # *features_rest[i].flatten(),
+            *scaling[i],
+            *rotation[i],
+            cat_id[i],
+        )
+        vertex_data.append(vertex)
+
+    vertex_dtype = [
+        ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+        ('opacity', 'f4'),
+        ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4'),
+    ]
+    # vertex_dtype += [(f'f_rest_{i}', 'f4') for i in range(features_rest.shape[2])]
+    vertex_dtype += [(f'scale_{i}', 'f4') for i in range(scaling.shape[1])]
+    vertex_dtype += [(f'rot_{i}', 'f4') for i in range(rotation.shape[1])]
+    vertex_dtype += [('cat_id', 'f4'),]
+
+    vertex_array = np.array(vertex_data, dtype=vertex_dtype)
+    element = PlyElement.describe(vertex_array, 'vertex')
+    PlyData([element]).write(output_path)
+    print("saved gs compliant ply to ", output_path)
+    
+
+def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 255], tube_radius=0.002, sections=4, maintain_aspect_ratio=False, up_direction='Y', use_cached_plys=False):
+    corner_points, _ = convert_to_up(corner_points, from_up='Y', to_up=up_direction)
+    print("create_bbox_marker")
     edges = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]]
     bbox_edge_list = []
     for edge in edges:
-        bbox_edge = trimesh.creation.cylinder(radius=tube_radius,sections=sections,segment=[corner_points[edge[0]],corner_points[edge[1]]])
+        bbox_edge = trimesh.creation.cylinder(radius=tube_radius, sections=sections, segment=[corner_points[edge[0]], corner_points[edge[1]]])
         bbox_edge_list.append(bbox_edge)
 
-    tmp = trimesh.util.concatenate(bbox_edge_list)
-    tmp.visual.face_colors = color
+    box_wireframes = trimesh.util.concatenate(bbox_edge_list)
+    box_wireframes.visual.face_colors = color
 
-    pcd = trimesh.load("/home/ubuntu/scene/GaussianDreamer/outputs/gaussiandreamer-sd/a_panda_shaped_sofa@20241115-063627/save/shape.ply")
-    print('PCD\t\t',tmp)
-    # Compute minimal bounding box of the PCD
-    pcd_points = np.array(pcd.vertices)
-    pcd_points = convert_to_up(pcd_points, from_up='Z', to_up=up_direction)
-    
-    pcd_points = apply_random_azimuthal_rotation(pcd_points, up_direction)
-    
-    pcd_min = pcd_points.min(axis=0)
-    pcd_max = pcd_points.max(axis=0)
-    pcd_bbox_size = pcd_max - pcd_min
-
-    # Compute BBOX dimensions
     bbox_min = np.min(corner_points, axis=0)
     bbox_max = np.max(corner_points, axis=0)
     bbox_size = bbox_max - bbox_min
     bbox_center = (bbox_min + bbox_max) / 2
 
-    # Compute scale factors and transformation
-    if maintain_aspect_ratio:
-        # Scale factor: Minimum ratio across dimensions to maintain aspect ratio
-        scale_factor = min(bbox_size / pcd_bbox_size)
-    else:
-        # Scale factor: Independent scaling for each dimension
-        scale_factor = bbox_size / pcd_bbox_size
+    asset_name = get_dirname_by_number(scene_asset_dir, cat_id)
+    if asset_name:
+        print(cat_id, asset_name)
+        ####################### Visualize PCD: Superimpose with BBOXes ####################### 
+        # print("####################### Visualize PCD: Superimpose with BBOXes ####################### ")
+        pcd = trimesh.load(os.path.join(scene_asset_dir, asset_name, "save/last_3dgs.ply"))
+        print('PCD\t\t',box_wireframes)
+        pcd_points = np.array(pcd.vertices)
+        pcd_points, R_up = convert_to_up(pcd_points, from_up='Z', to_up=up_direction)
+        
+        pcd_points, R_az = apply_random_azimuthal_rotation(pcd_points, up_direction)
+        
+        pcd_min = pcd_points.min(axis=0)
+        pcd_max = pcd_points.max(axis=0)
+        pcd_bbox_size = pcd_max - pcd_min
+        pcd_points, S = scale_gs_to_bbox(pcd_points, bbox_size, pcd_bbox_size, maintain_aspect_ratio)
+        
+        pcd_center = pcd_points.mean(axis=0)
+        translation = bbox_center - pcd_center
+        pcd_transformed_points = pcd_points + translation
+        
+        pcd_transformed = trimesh.points.PointCloud(pcd_transformed_points)
 
-    # Apply scaling
-    pcd_rescaled_points = (pcd_points - pcd_min) * scale_factor
+        ####################### Visualize GS: Standalone ####################### 
+        # print("####################### Visualize GS: Standalone ####################### ")
+        output_path = os.path.join(scene_asset_dir, asset_name, "echoscene.ply")
+        # Check if the transformed GS already exists
+        if os.path.exists(output_path) and use_cached_plys:
+            print(f"GS file already exists at {output_path}. Loading existing file.")
+            ply_data = PlyData.read(output_path)
+            
+            # Extract data from existing .ply file
+            xyz = np.stack((ply_data['vertex']['x'], ply_data['vertex']['y'], ply_data['vertex']['z']), axis=1)
+            opacities = np.asarray(ply_data['vertex']['opacity'])
+            features_dc = np.stack((ply_data['vertex']['f_dc_0'], ply_data['vertex']['f_dc_1'], ply_data['vertex']['f_dc_2']), axis=1)
+
+            scale_names = [p.name for p in ply_data['vertex'].properties if p.name.startswith("scale_")]
+            scales = np.stack([ply_data['vertex'][name] for name in scale_names], axis=1)
+
+            rot_names = [p.name for p in ply_data['vertex'].properties if p.name.startswith("rot")]
+            rotations = np.stack([ply_data['vertex'][name] for name in rot_names], axis=1)
+
+            splats_transformed = {
+                "output_path": output_path,
+                "points": xyz,
+                "opacities": opacities,
+                "features_dc": features_dc,
+                "features_rest": None,  # Assuming extra features aren't stored
+                "scaling": scales,
+                "rotation": rotations,
+                "cat_id": np.full(opacities.shape, cat_id),
+            }
+            
+        else:
+            pcd = trimesh.load(os.path.join(scene_asset_dir, asset_name, "save/last_3dgs.ply"))
+            ply_path  = os.path.join(scene_asset_dir, asset_name, "save/last_3dgs.ply")
+            ply_data = PlyData.read(ply_path)
+
+            xyz = np.stack((ply_data['vertex']['x'], ply_data['vertex']['y'], ply_data['vertex']['z']), axis=1)
+            assert np.allclose(xyz, np.array(pcd.vertices))
+            opacities = np.asarray(ply_data['vertex']['opacity'])
+            features_dc = np.stack((ply_data['vertex']['f_dc_0'], ply_data['vertex']['f_dc_1'], ply_data['vertex']['f_dc_2']), axis=1)
+            
+            features_dc = np.zeros((xyz.shape[0], 3, 1))
+            features_dc[:, 0, 0] = np.asarray(ply_data.elements[0]["f_dc_0"])
+            features_dc[:, 1, 0] = np.asarray(ply_data.elements[0]["f_dc_1"])
+            features_dc[:, 2, 0] = np.asarray(ply_data.elements[0]["f_dc_2"])
+
+            # extra_f_names = [p.name for p in ply_data.elements[0].properties if p.name.startswith("f_rest_")]
+            # extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+            # assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+            # features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+            # for idx, attr_name in enumerate(extra_f_names):
+            #     features_extra[:, idx] = np.asarray(ply_data.elements[0][attr_name])
+            # # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+            # features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+
+            scale_names = [p.name for p in ply_data.elements[0].properties if p.name.startswith("scale_")]
+            scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+            scales = np.zeros((xyz.shape[0], len(scale_names)))
+            for idx, attr_name in enumerate(scale_names):
+                scales[:, idx] = np.asarray(ply_data.elements[0][attr_name])
+
+            rot_names = [p.name for p in ply_data.elements[0].properties if p.name.startswith("rot")]
+            rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+            rots = np.zeros((xyz.shape[0], len(rot_names)))
+            for idx, attr_name in enumerate(rot_names):
+                rots[:, idx] = np.asarray(ply_data.elements[0][attr_name])
+                
+            features_rest = None #torch.nn.Parameter(torch.tensor(features_extra, dtype=torch.float).transpose(1, 2).contiguous())
+            xyz = torch.nn.Parameter(torch.tensor(scales, dtype=torch.float))
+            scaling = torch.nn.Parameter(torch.tensor(scales, dtype=torch.float))
+            rotation = torch.nn.Parameter(torch.tensor(rots, dtype=torch.float))
+
+            # transformed_points, rescaled_scaling = transform_gaussian_splats(
+            #     xyz, scaling, rotation, bbox_size, bbox_center, maintain_aspect_ratio)
+            xyz, scaling, rotation = transform_gaussian_parameters(R_up, R_az, S, translation, xyz.detach().numpy(), scaling.detach().numpy(), rotation.detach().numpy())
+            
+            print(xyz[:5], pcd_transformed_points[:5])
+            
+            print("pcd_transformed_points.shape, xyz.shape", pcd_transformed_points.shape, xyz.shape) # should be checked with np.allclose
+            
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            splats_transformed = {
+                "output_path": output_path, 
+                "points": pcd_transformed_points, 
+                "opacities": opacities, 
+                "features_dc": features_dc, 
+                "features_rest": features_rest, 
+                "scaling": scaling, 
+                "rotation": rotation,
+                "cat_id": np.full(opacities.shape, cat_id),
+            }
+            save_gs_compliant_ply(**splats_transformed)
     
-    # Center the rescaled PCD in the BBOX
-    pcd_rescaled_center = pcd_rescaled_points.mean(axis=0)
-    translation = bbox_center - pcd_rescaled_center
-    pcd_transformed_points = pcd_rescaled_points + translation
+    else:
+        pcd_transformed = None
 
-    # Create transformed PCD mesh
-    pcd_transformed = trimesh.points.PointCloud(pcd_transformed_points)
-
-    # z axis to x axis
-    # R = np.array([[0,0,1],[1,0,0],[0,1,0]]).reshape(3,3)
-    # t =  np.array([0, 0, -1.12169998e-01]).reshape(3,1)
-    #
-    # T = np.r_[np.c_[np.eye(3), t], [[0, 0, 0, 1]]]
-    # tmp.apply_transform(T)
-
-    return [tmp, pcd_transformed]
+    return box_wireframes, pcd_transformed, splats_transformed
 
 
 def params_to_8points_no_rot(box):
