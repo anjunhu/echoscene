@@ -17,6 +17,7 @@ from helpers.util import bool_flag
 from helpers.interrupt_handler import InterruptHandler
 import json
 from tensorboardX import SummaryWriter
+import wandb
 
 parser = argparse.ArgumentParser()
 # standard hyperparameters, batch size, learning rate, etc
@@ -31,6 +32,7 @@ parser.add_argument('--dataset', required=False, type=str, default="/media/ymxlz
 parser.add_argument('--logf', default='logs', help='folder to save tensorboard logs')
 parser.add_argument('--exp', default='../experiments/layout_test', help='experiment name')
 parser.add_argument('--room_type', default='bedroom', help='room type [bedroom, livingroom, diningroom, library, all]')
+parser.add_argument('--wandb', action='store_true', help='log to wandb')
 
 # GCN parameters
 parser.add_argument('--residual', type=bool_flag, default=False, help="residual in GCN")
@@ -55,7 +57,7 @@ parser.add_argument('--num_box_params', default=6, type=int, help="number of the
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
 parser.add_argument('--with_changes', default=True, type=bool_flag)
 parser.add_argument('--loadmodel', default=False, type=bool_flag)
-parser.add_argument('--loadepoch', default=90, type=int, help='only valid when loadmodel is true')
+parser.add_argument('--loadepoch', default=2050, type=int, help='only valid when loadmodel is true')
 parser.add_argument('--replace_latent', default=True, type=bool_flag)
 parser.add_argument('--network_type', default='echoscene', choices=['echoscene', 'echolayout'], type=str)
 parser.add_argument('--diff_yaml', default='../config/full_mp.yaml', type=str,
@@ -142,7 +144,10 @@ def parse_data(data):
 def train():
     """ Train the network based on the provided argparse parameters
     """
-    args.manualSeed = random.randint(1, 10000)
+    if args.wandb:
+        wandb.init()
+        wandb.run.log_code("..") 
+    args.manualSeed = 2025 #random.randint(1, 10000)
     print("Random Seed: ", args.manualSeed)
 
     print(torch.__version__)
@@ -153,7 +158,7 @@ def train():
     # instantiate scene graph dataset for training
     dataset = ThreedFrontDatasetSceneGraph(
         root=args.dataset,
-        split='train_scans',
+        split='test',
         shuffle_objs=args.shuffle_objs,
         use_SDF=args.with_SDF,
         use_scene_rels=args.use_scene_rels,
@@ -191,7 +196,8 @@ def train():
         model = model.cuda()
 
     if args.loadmodel:
-        model.load_networks(exp=args.exp, epoch=args.loadepoch, restart_optim=False)
+        model.load_networks(exp=args.exp, epoch=args.loadepoch, restart_optim=False, strict=False)
+        # model.load_networks(exp=args.exp, epoch=args.epoch, restart_optim=True, load_shape_branch=args.gen_shape)
 
     # initialize tensorboard writer
     writer = SummaryWriter(args.exp + "/" + args.logf)
@@ -297,7 +303,7 @@ def train():
             if h.interrupted:
                 break
 
-            if epoch % 100 == 0:
+            if epoch % 10 == 0:
                 model.save(args.exp, args.outf, epoch, counter=counter)
                 print('saved model_{}'.format(epoch))
 

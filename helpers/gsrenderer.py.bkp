@@ -1,0 +1,90 @@
+import numpy as np
+from plyfile import PlyData, PlyElement
+
+def transform_gaussian_splats(points, scaling, rotation, bbox_size, bbox_center, maintain_aspect_ratio):
+    # Compute PCD min and max
+    pcd_min = points.min(axis=0)
+    pcd_max = points.max(axis=0)
+    pcd_bbox_size = pcd_max - pcd_min
+
+    # Compute scale factors
+    if maintain_aspect_ratio:
+        scale_factor = min(bbox_size / pcd_bbox_size)
+    else:
+        scale_factor = bbox_size / pcd_bbox_size
+
+    # Apply scaling
+    rescaled_points = (points - pcd_min) * scale_factor
+
+    # Adjust Gaussian scales accordingly
+    rescaled_scaling = scaling * scale_factor
+
+    # Center PCD within the bounding box
+    rescaled_center = rescaled_points.mean(axis=0)
+    translation = bbox_center - rescaled_center
+    transformed_points = rescaled_points + translation
+
+    return transformed_points, rescaled_scaling
+
+def save_gs_compliant_ply(output_path, points, opacities, features_dc, features_rest, scaling, rotation):
+    vertex_data = []
+    for i in range(len(points)):
+        vertex = (
+            points[i][0], points[i][1], points[i][2],
+            opacities[i],
+            features_dc[i][0], features_dc[i][1], features_dc[i][2],
+            *features_rest[i].flatten(),
+            *scaling[i],
+            *rotation[i]
+        )
+        vertex_data.append(vertex)
+
+    vertex_dtype = [
+        ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+        ('opacity', 'f4'),
+        ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4'),
+    ]
+    vertex_dtype += [(f'f_rest_{i}', 'f4') for i in range(features_rest.shape[2])]
+    vertex_dtype += [(f'scale_{i}', 'f4') for i in range(scaling.shape[1])]
+    vertex_dtype += [(f'rot_{i}', 'f4') for i in range(rotation.shape[1])]
+
+    vertex_array = np.array(vertex_data, dtype=vertex_dtype)
+    element = PlyElement.describe(vertex_array, 'vertex')
+    PlyData([element]).write(output_path)
+
+def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 255], tube_radius=0.002, sections=4, maintain_aspect_ratio=False, up_direction='Y'):
+    corner_points = convert_to_up(corner_points, from_up='Y', to_up=up_direction)
+
+    edges = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]]
+    bbox_edge_list = []
+    for edge in edges:
+        bbox_edge = trimesh.creation.cylinder(radius=tube_radius, sections=sections, segment=[corner_points[edge[0]], corner_points[edge[1]]])
+        bbox_edge_list.append(bbox_edge)
+
+    tmp = trimesh.util.concatenate(bbox_edge_list)
+    tmp.visual.face_colors = color
+
+    bbox_min = np.min(corner_points, axis=0)
+    bbox_max = np.max(corner_points, axis=0)
+    bbox_size = bbox_max - bbox_min
+    bbox_center = (bbox_min + bbox_max) / 2
+
+    asset_name = get_dirname_by_number(scene_asset_dir, cat_id)
+    if asset_name:
+        pcd_path = os.path.join(scene_asset_dir, asset_name, "save/it1200-test-color.ply")
+        pcd_data = PlyData.read(pcd_path)
+
+        xyz = np.stack((pcd_data['vertex']['x'], pcd_data['vertex']['y'], pcd_data['vertex']['z']), axis=1)
+        # opacities = np.asarray(pcd_data['vertex']['opacity'])
+        features_dc = np.stack((pcd_data['vertex']['f_dc_0'], pcd_data['vertex']['f_dc_1'], pcd_data['vertex']['f_dc_2']), axis=1)
+        features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
+        rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+
+        transformed_points, rescaled_scaling = transform_gaussian_splats(
+            xyz, scaling, rotation, bbox_size, bbox_center, maintain_aspect_ratio)
+
+        output_path = os.path.join(scene_asset_dir, asset_name, "transformed.ply")
+        save_gs_compliant_ply(output_path, transformed_points, opacities, features_dc, features_rest, rescaled_scaling, rotation)
+
+    return [tmp, None]

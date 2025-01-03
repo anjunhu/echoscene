@@ -186,11 +186,9 @@ def render_box(scene_id, cats, predBoxes, predAngles, datasize='small', classes=
         lamp_mesh_list, trimesh_meshes, raw_meshes = get_sdfusion_models(box_and_angle, cats, classes, mesh_dir, render_boxes=render_boxes,
                                              colors=color_palette[cats], without_lamp=without_lamp)
     elif render_type == 'onlybox':
-        scene_asset_dir = f"/home/ubuntu/scene/GaussianDreamer/outputs/{scene_id[0]}"
-        # scene_asset_dir = f"/home/ubuntu/scene/EchoScene/"
+        scene_asset_dir = f"/home/ubuntu/scene/GaussianDreamer/msnd/{scene_id[0]}"
         print("scene_asset_dir", scene_asset_dir)
         lamp_mesh_list, trimesh_meshes = get_bbox(box_and_angle, cats, classes, scene_asset_dir=scene_asset_dir, store_path=store_path, colors=color_palette[cats], without_lamp=without_lamp)
-        # create_gs_compliant_ply(box_points, scene_asset_dir=os.path.dirname(os.path.abspath(__file__)), cat_id=cat_ids[j], without_lamp=without_lamp)
     else:
         raise NotImplementedError
 

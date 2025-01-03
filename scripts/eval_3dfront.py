@@ -21,6 +21,7 @@ from helpers.metrics_3dfront import validate_constrains, validate_constrains_cha
 from helpers.visualize_scene import render_full, render_box
 from omegaconf import OmegaConf
 import json
+import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', required=False, type=str, default="/media/ymxlzgy/Data/Dataset/FRONT", help="dataset path")
@@ -287,7 +288,12 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
 
         if args.visualize:
             print(data.keys())
-            classes = data['objs_text'][0]
+            if isinstance(test_dataset, ThreedFrontDatasetSceneGraph):
+                classes = sorted(list(set(vocab['object_idx_to_name'])))
+            elif isinstance(test_dataset, AnySceneDatasetSceneGraph):
+                classes = data['objs_text'][0]
+            else:
+                raise NotImplementedError
             print(classes, dec_objs)
             # layout and shape visualization through open3d
             print("rendering", [classes[i].strip('\n') for i in dec_objs])
@@ -306,7 +312,7 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
         all_pred_angles.append(angles_pred.cpu().detach())
         # compute constraints accuracy through simple geometric rules
         accuracy = validate_constrains(dec_triples, boxes_pred_den, angles_pred, None, model.vocab, accuracy)
-        if i > -1: break
+        # if i > -1: break
 
     keys = list(accuracy.keys())
     os.makedirs(modelArgs['store_path'], exist_ok=True)
@@ -321,7 +327,7 @@ def validate_constrains_loop(modelArgs, test_dataset, model, epoch=None, normali
             close_mean = np.mean(dic[keys[9]])
             symm_mean = np.mean(dic[keys[10]])
             total_mean = np.mean(dic[keys[11]])
-            means_of_mean = np.mean([lr_mean, fb_mean, bism_mean, tash_mean, stand_mean, close_mean, symm_mean])
+            means_of_mean = np.mean([lr_mean, fb_mean, bism_mean, tash_mean])
             print(
                 '{} & L/R: {:.2f} & F/B: {:.2f} & Bi/Sm: {:.2f} & Ta/Sh: {:.2f} & Stand: {:.2f} & Close: {:.2f} & Symm: {:.2f}. Total: &{:.2f}'.format(
                     typ, lr_mean,
@@ -344,7 +350,7 @@ def evaluate():
 
     test_dataset = AnySceneDatasetSceneGraph(
         root=args.dataset,
-        split='val_scans',
+        split=None,
         use_scene_rels=modelArgs['use_scene_rels'],
         with_changes=False,
         eval=True,
@@ -353,6 +359,20 @@ def evaluate():
         use_SDF=modelArgs['with_SDF'],
         large=modelArgs['large'],
         room_type=args.room_type)
+    
+    # test_dataset = ThreedFrontDatasetSceneGraph(
+    #     root="/home/ubuntu/datasets/FRONT/",
+    #     rel_json_file='relationships_mini_test.json',
+    #     use_scene_rels=modelArgs['use_scene_rels'],
+    #     with_changes=False,
+    #     eval=True,
+    #     eval_type='none',
+    #     with_CLIP=modelArgs['with_CLIP'],
+    #     use_SDF=modelArgs['with_SDF'],
+    #     large=modelArgs['large'],
+    #     room_type=args.room_type)
+    
+    print(">>>> Test Size", len(test_dataset))
 
     modeltype_ = "echolayout" if args.render_type == "onlybox" else modelArgs['network_type'] 
     modelArgs['store_path'] = os.path.join(args.exp, "vis", args.epoch)

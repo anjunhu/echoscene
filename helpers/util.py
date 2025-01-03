@@ -170,23 +170,26 @@ def get_bbox(boxes, cat_ids, classes, scene_asset_dir, store_path, colors, witho
     s = io.StringIO()
     sortby = 'cumulative'
     ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
-    ps.print_stats()
-    print(s.getvalue())  # Print the profiling result to the console, or save to a file
+    # ps.print_stats()
+    # print(s.getvalue())  # Print the profiling result to the console, or save to a file
 
     for s in splats_data:
         print(f"Points: {s['points'].shape}, Opacities: {s['opacities'].shape}, Features DC: {s['features_dc'].shape}, Scaling: {s['scaling'].shape}, Rotation: {s['rotation'].shape}, Group: {s['cat_id'].shape}")
-    # Combine all splats into a single GS-compliant .ply file
-    combined_points = np.concatenate([s["points"] for s in splats_data])
-    combined_opacities = np.concatenate([s["opacities"] for s in splats_data])
-    combined_features_dc = np.concatenate([s["features_dc"] for s in splats_data])
-    combined_scales = np.concatenate([s["scaling"] for s in splats_data])
-    combined_rotations = np.concatenate([s["rotation"] for s in splats_data])
-    combined_groups = np.concatenate([[s["cat_id"]] * len(s["points"]) for s in splats_data]) if not isinstance(s["cat_id"], np.ndarray) else np.concatenate([s["cat_id"] for s in splats_data]) 
-    print(f"Combined Points: {combined_points.shape}, Opacities: {combined_opacities.shape}, Features DC: {combined_features_dc.shape}, Scaling: {combined_scales.shape}, Group: {combined_groups.shape}")
-  
-    combined_output_path = os.path.join(store_path, "combined_gs.ply")
-    save_gs_compliant_ply(combined_output_path, combined_points, combined_opacities,
-                                      combined_features_dc, None, combined_scales, combined_rotations, combined_groups)
+    
+    if splats_data:
+        # Combine all splats into a single GS-compliant .ply file
+        combined_points = np.concatenate([s["points"] for s in splats_data])
+        combined_opacities = np.concatenate([s["opacities"] for s in splats_data])
+        combined_features_dc = np.concatenate([s["features_dc"] for s in splats_data])
+        combined_scales = np.concatenate([s["scaling"] for s in splats_data])
+        combined_rotations = np.concatenate([s["rotation"] for s in splats_data])
+        combined_groups = np.concatenate([[s["cat_id"]] * len(s["points"]) for s in splats_data]) if not isinstance(s["cat_id"], np.ndarray) else np.concatenate([s["cat_id"] for s in splats_data]) 
+        print(f"Combined Points: {combined_points.shape}, Opacities: {combined_opacities.shape}, Features DC: {combined_features_dc.shape}, Scaling: {combined_scales.shape}, Group: {combined_groups.shape}")
+
+        scene_id = os.path.basename(os.path.normpath(scene_asset_dir))
+        combined_output_path = os.path.join(store_path, f"combined_gs_{scene_id}.ply")
+        save_gs_compliant_ply(combined_output_path, combined_points, combined_opacities,
+                              combined_features_dc, None, combined_scales, combined_rotations, combined_groups)
 
     return lamp_mesh_list, trimesh_meshes
 
@@ -408,18 +411,29 @@ def get_sdfusion_models(boxes, cat_ids, classes, mesh_dir, render_boxes=False, c
     return lamp_mesh_list, obj_list, raw_obj_list
 
 
-def params_to_8points_3dfront(box, degrees=False):
+def params_to_8points_3dfront(box, degrees=False, use_numpy=True):
     """ Given bounding box as 7 parameters: l, h, w, cx, cy, cz, z, compute the 8 corners of the box
     """
     l, h, w, px, py, pz, angle = box
+
     points = []
     for i in [-1, 1]:
         for j in [0, 1]:
             for k in [-1, 1]:
-                points.append([l.item()/2 * i, h.item() * j, w.item()/2 * k])
-    points = np.asarray(points)
-    points = points.dot(get_rotation_3dfront(angle.item(), degree=degrees))
-    points += np.expand_dims(np.array([px.item(), py.item(), pz.item()]), 0)
+                if use_numpy:
+                    points.append([l.item()/2 * i, h.item() * j, w.item()/2 * k])
+                else:
+                    points.append(torch.tensor([l.item()/2 * i, h.item() * j, w.item()/2 * k]))
+
+    if use_numpy:
+        points = np.asarray(points)
+        points = points.dot(get_rotation_3dfront(angle.item(), degree=degrees))
+        points += np.expand_dims(np.array([px.item(), py.item(), pz.item()]), 0)
+    else:
+        points = torch.stack(points)
+        points = torch.matmul(points, torch.tensor(get_rotation_3dfront(angle.item(), degree=degrees)).to(points.device).to(points.dtype))
+        points += torch.tensor([[px.item(), py.item(), pz.item()]])
+
     return points
 
 def convert_to_up(points, from_up, to_up):
@@ -606,6 +620,8 @@ def transform_gaussian_parameters(R_up, R_az, S, T, xyz, scales, rots):
 
 def get_dirname_by_number(root_dir, number):
     print(root_dir, number)
+    if not os.path.isdir(root_dir):
+        return None
     prefix = f"{number}_"
     for dirname in os.listdir(root_dir):
         if dirname.startswith(prefix):
@@ -677,8 +693,15 @@ def save_gs_compliant_ply(output_path, points, opacities, features_dc, features_
     print("saved gs compliant ply to ", output_path)
     
 
-def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 255], tube_radius=0.002, sections=4, maintain_aspect_ratio=False, up_direction='Y', use_cached_plys=False):
+def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 255], tube_radius=0.002, sections=4,
+                       maintain_aspect_ratio=False, up_direction='Y', use_cached_plys=False):
     corner_points, _ = convert_to_up(corner_points, from_up='Y', to_up=up_direction)
+    
+    if up_direction == 'Y':
+        y_coords = [point[1] for point in corner_points]
+        min_y = min(y_coords)
+        corner_points = [[x, y - min_y, z] for x, y, z in corner_points]
+        
     print("create_bbox_marker")
     edges = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]]
     bbox_edge_list = []
@@ -694,8 +717,9 @@ def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 25
     bbox_size = bbox_max - bbox_min
     bbox_center = (bbox_min + bbox_max) / 2
 
+    # Optionally insert pre-made GS assets
     asset_name = get_dirname_by_number(scene_asset_dir, cat_id)
-    if asset_name:
+    if asset_name and os.path.isfile(os.path.join(scene_asset_dir, asset_name, "save/last_3dgs.ply")):
         print(cat_id, asset_name)
         ####################### Visualize PCD: Superimpose with BBOXes ####################### 
         # print("####################### Visualize PCD: Superimpose with BBOXes ####################### ")
@@ -811,6 +835,7 @@ def create_bbox_marker(corner_points, scene_asset_dir, cat_id=0, color=[0, 0, 25
     
     else:
         pcd_transformed = None
+        splats_transformed = None
 
     return box_wireframes, pcd_transformed, splats_transformed
 

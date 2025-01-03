@@ -47,9 +47,8 @@ def load_ckpt(ckpt):
 class AnySceneDatasetSceneGraph(data.Dataset):
     def __init__(self, root, split=None, root_3dfront='', shuffle_objs=False, pass_scan_id=False, use_SDF=False,
                  use_scene_rels=False, data_len=None, with_changes=True, scale_func='diag', eval=False,
-                 eval_type='addition', with_CLIP=True, bin_angle=False,
-                 seed=True, large=False, recompute_feats=False, recompute_clip=False,
-                 room_type='bedroom'):
+                 eval_type='addition', with_CLIP=True, bin_angle=False, rel_json_file='relationships_anyscene.json',
+                 seed=True, large=False, recompute_feats=True, recompute_clip=True, room_type='all'):
 
         self.room_type = room_type
         self.seed = seed
@@ -92,7 +91,7 @@ class AnySceneDatasetSceneGraph(data.Dataset):
 
         self.box_normalized_stats = os.path.join(self.root, 'centered_bounds_anyscene.txt')
 
-        self.rel_json_file = os.path.join(self.root, 'relationships_anyscene.json')
+        self.rel_json_file = os.path.join(self.root, rel_json_file)
         self.box_json_file = os.path.join(self.root, 'obj_boxes_anyscene.json')
 
         self.relationship_json, self.objs_json, self.tight_boxes_json = \
@@ -203,20 +202,12 @@ class AnySceneDatasetSceneGraph(data.Dataset):
 
     def __getitem__(self, index):
         scan_id = self.scans[index]
-
-        # instance2label, the whole instance ids in this scene e.g. {1: 'floor', 2: 'wall', 3: 'picture', 4: 'picture'}
         instance2label = self.objs_json[scan_id]
         print("instance2label", instance2label)
-        # random_replacements = ['panda', 'spaceship', 'bunny', 'dragon', 'teapot', 'sphere', 'camel', 'cube', 'spaghetti']
-        unique_values = set(instance2label.values())
-        # print(unique_values)
-        # instance2label_rand = {label: random.choice(random_replacements) for label in unique_values}
         keys = list(instance2label.keys())
 
         if self.shuffle_objs:
             random.shuffle(keys)
-
-        feats_in = None
         clip_feats_ins = None
         clip_feats_rel = None
 
@@ -306,7 +297,6 @@ class AnySceneDatasetSceneGraph(data.Dataset):
                     triples.append([subject, predicate, object])
                     if not self.large:
                         words.append(instance2label[r[0]] + ' ' + r[3] + ' ' + instance2label[r[1]])
-                        # words.append(self.mapping_full2simple[instance2label[r[0]]] + ' ' + r[3] + ' ' + self.mapping_full2simple[instance2label[r[1]]])
                     else:
                         words.append(instance2label[r[0]]+' '+r[3]+' '+instance2label[r[1]]) # TODO check
                     print(words[-1])
@@ -318,8 +308,6 @@ class AnySceneDatasetSceneGraph(data.Dataset):
             scene_idx = len(cat_ids)
             for i, ob in enumerate(cat_ids):
                 triples.append([i, 0, scene_idx])
-                # words.append(self.get_key(self.classes, ob) + ' ' + 'in' + ' ' + 'room')
-                # words.append(instance2label_rand[self.get_key(self.classes, ob)] + ' ' + 'in' + ' ' + 'room')
                 words.append(list(instance2label.values())[i%len(instance2label)] + ' ' + 'in' + ' ' + 'room')
             cat_ids.append(0)
             cat_ids_grained.append(0)
@@ -716,7 +704,6 @@ class AnySceneDatasetSceneGraph(data.Dataset):
 if __name__ == "__main__":
     dataset = AnySceneDatasetSceneGraph(
         root="/home/ubuntu/datasets/FRONT",
-        shuffle_objs=True,
         use_SDF=False,
         use_scene_rels=True,
         with_changes=True,

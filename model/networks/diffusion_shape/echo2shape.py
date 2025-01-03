@@ -314,7 +314,7 @@ class EchoToShape(BaseModel):
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3, 4])
         loss_dict.update({f'loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar[t.cpu()].to(self.device)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         if self.learn_logvar:
             loss_dict.update({f'loss_gamma': loss.mean()})

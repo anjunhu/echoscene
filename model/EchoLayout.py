@@ -6,13 +6,14 @@ from model.graph import GraphTripleConvNet, _init_weights, make_mlp
 from model.networks.diffusion_layout.echo2layout import EchoToLayout
 import numpy as np
 from helpers.lr_scheduler import *
+from pprint import pprint
 
 def randint_like(input):
     return torch.randint(torch.min(input), torch.max(input), size=input.shape, dtype=input.dtype, device=input.device)
 
 class Sg2BoxDiffModel(nn.Module):
     def __init__(self, vocab, diff_opt, diffusion_bs=8, embedding_dim=128, batch_size=32,
-                 gconv_pooling='avg', gconv_num_layers=5,
+                 gconv_pooling='avg', gconv_num_layers=5, use_obj_embeddings_adapters=False,
                  mlp_normalization='none',
                  separated=False,
                  replace_latent=False,
@@ -45,6 +46,10 @@ class Sg2BoxDiffModel(nn.Module):
         self.pred_embeddings_ec = nn.Embedding(num_preds, gconv_dim * 2)
         self.obj_embeddings_dc = nn.Embedding(num_objs + 1, gconv_dim * 2) # TODO is this necessary?
         self.pred_embeddings_man_dc = nn.Embedding(num_preds, gconv_dim * 2)
+        self.use_obj_embeddings_adapters = use_obj_embeddings_adapters
+        if use_obj_embeddings_adapters:
+            self.obj_embeddings_ec_adapter = nn.Linear(gconv_dim * 2 + add_dim, gconv_dim * 2 + add_dim)
+            self.obj_embeddings_dc_adapter = nn.Linear(gconv_dim * 2 + add_dim, gconv_dim * 2 + add_dim) 
 
         self.out_dim_ini_encoder = gconv_dim * 2 + add_dim
         gconv_kwargs_ec = {
@@ -57,6 +62,7 @@ class Sg2BoxDiffModel(nn.Module):
             'residual': residual,
             'output_dim': self.out_dim_ini_encoder
         }
+        pprint(gconv_kwargs_ec)
         self.out_dim_manipulator = gconv_dim * 2 + add_dim
         gconv_kwargs_manipulation = {
             'input_dim_obj': self.out_dim_ini_encoder + gconv_dim + gconv_dim * 2 + add_dim, # latent_f + change_flag + obj_embedding + clip
@@ -111,7 +117,11 @@ class Sg2BoxDiffModel(nn.Module):
             return self.lr_evo[2] / self.lr_init
 
     def optimizer_ini(self):
-        gcn_layout_df_params = [p for p in self.parameters() if p.requires_grad == True]
+        
+        if self.use_obj_embeddings_adapters:
+            gcn_layout_df_params = [p for name, p in self.named_parameters() if p.requires_grad == True and "obj_embeddings_ec_adapter" in name]
+        else:
+            gcn_layout_df_params = [p for name, p in self.named_parameters() if p.requires_grad == True]
         self.optimizerFULL = optim.AdamW(gcn_layout_df_params, lr=self.lr_init)
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizerFULL, lr_lambda=self.lr_lambda)
         self.optimizers = [self.optimizerFULL]
@@ -131,17 +141,20 @@ class Sg2BoxDiffModel(nn.Module):
         # edges = torch.randint_like(edges, torch.min(edges), torch.max(edges))
         
         obj_embed = self.obj_embeddings_ec(objs)
+        # obj_embed = torch.randn_like(obj_embed)
         pred_embed = self.pred_embeddings_ec(p)
-        # print(objs, p)
-        print("!!!Sg2BoxDiffModel.init_encoder\nobj_embed, pred_embed", enc_text_feat.shape, obj_embed.shape, pred_embed.shape)
+        print("RANDOMIZING... Sg2BoxDiffModel.init_encoder\nobj_embed, pred_embed", enc_text_feat.shape, obj_embed.shape, pred_embed.shape)
         
         if self.clip:
             obj_embed = torch.cat([enc_text_feat, obj_embed], dim=1)
             pred_embed = torch.cat([enc_rel_feat, pred_embed], dim=1)
-        print("Sg2BoxDiffModel.init_encoder\nenc_text_feat, enc_rel_feat", enc_text_feat.shape, enc_rel_feat.shape)
+        print("\nSg2BoxDiffModel.init_encoder\nenc_text_feat, enc_rel_feat", enc_text_feat.shape, enc_rel_feat.shape)
 
+        if self.use_obj_embeddings_adapters: 
+            print("Using Linear Adapter!")
+            obj_embed = self.obj_embeddings_ec_adapter(obj_embed)
         latent_obj_f, latent_pred_f = self.gconv_net_ec(obj_embed, pred_embed, edges)
-        print("Sg2BoxDiffModel.init_encoder\nlatent_obj_f, latent_pred_f", latent_obj_f.shape,  latent_pred_f.shape)
+        print("\nSg2BoxDiffModel.init_encoder\nlatent_obj_f, latent_pred_f", latent_obj_f.shape,  latent_pred_f.shape)
         
         # return torch.rand_like(obj_embed), torch.rand_like(pred_embed), torch.rand_like(latent_obj_f), torch.rand_like(latent_pred_f)
         return obj_embed, pred_embed, latent_obj_f, latent_pred_f

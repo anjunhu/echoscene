@@ -1,0 +1,91 @@
+import numpy as np
+
+class PlyDataTransformer:
+    def __init__(self, points, scales, rotations, translation=None):
+        """
+        Initialize the PlyDataTransformer.
+
+        Args:
+            points (ndarray): Nx3 array of points.
+            scales (ndarray): Nx3 array of scales.
+            rotations (ndarray): Nx4 array of quaternions (w, x, y, z).
+            translation (ndarray): 1x3 translation vector.
+        """
+        self.points = np.array(points)
+        self.scales = np.array(scales)
+        self.rotations = np.array(rotations)
+        self.translation = np.array(translation) if translation is not None else np.zeros(3)
+
+    @staticmethod
+    def quat_to_rotmat(quaternion):
+        """
+        Convert a quaternion to a rotation matrix.
+
+        Args:
+            quaternion (ndarray): Quaternion as [w, x, y, z].
+
+        Returns:
+            ndarray: 3x3 rotation matrix.
+        """
+        w, x, y, z = quaternion
+        return np.array([
+            [1 - 2 * (y ** 2 + z ** 2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x ** 2 + z ** 2), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x ** 2 + y ** 2)]
+        ])
+
+    @staticmethod
+    def rotmat_to_quat(rotmat):
+        """
+        Convert a rotation matrix to a quaternion.
+
+        Args:
+            rotmat (ndarray): 3x3 rotation matrix.
+
+        Returns:
+            ndarray: Quaternion as [w, x, y, z].
+        """
+        from scipy.spatial.transform import Rotation as R
+        return R.from_matrix(rotmat).as_quat()
+
+    def apply_transformations(self, R_up, R_az, S, T):
+        """
+        Apply the sequence of transformations to the PlyData.
+
+        Args:
+            R_up (ndarray): 3x3 rotation matrix for up conversion.
+            R_az (ndarray): 3x3 rotation matrix for azimuthal rotation.
+            S (ndarray): 3x3 scaling matrix.
+            T (ndarray): 1x3 translation vector.
+        """
+        # Step 1: Apply R_up
+        self.points = self.points @ R_up.T
+        rotation_matrices = np.array([self.quat_to_rotmat(q) for q in self.rotations])
+        rotation_matrices = np.einsum('ij,kjl->kil', R_up, rotation_matrices)
+
+        # Step 2: Apply R_az
+        self.points = self.points @ R_az.T
+        rotation_matrices = np.einsum('ij,kjl->kil', R_az, rotation_matrices)
+
+        # Step 3: Apply Scaling (S)
+        self.points = self.points @ S.T
+        self.scales = self.scales @ S.T  # Apply scaling to scales
+
+        # Step 4: Apply Translation (T)
+        self.points += T
+
+        # Step 5: Update rotations back to quaternion format
+        self.rotations = np.array([self.rotmat_to_quat(rm) for rm in rotation_matrices])
+
+    def get_transformed_data(self):
+        """
+        Get the transformed data.
+
+        Returns:
+            dict: Transformed points, scales, and rotations.
+        """
+        return {
+            "points": self.points,
+            "scales": self.scales,
+            "rotations": self.rotations
+        }

@@ -46,7 +46,37 @@ class SGDiff(nn.Module):
 
         return obj_selected, shape_loss, layout_loss, loss_dict
 
+    def load_optimizer_state_dict_non_strict(self, optimizer, state_dict):
+        """
+        Load optimizer state dict in a non-strict fashion, handling mismatched parameters.
+        """
+        # Get current optimizer state
+        current_state = optimizer.state_dict()
+        
+        # Load param_groups while handling mismatches
+        for saved_group, current_group in zip(state_dict['param_groups'], current_state['param_groups']):
+            # Copy matching keys from saved group
+            for key in set(saved_group.keys()) & set(current_group.keys()):
+                current_group[key] = saved_group[key]
+        
+        # Handle state dict
+        saved_state = state_dict['state']
+        
+        # Create mapping of parameter IDs to parameters
+        current_params = {}
+        for group in optimizer.param_groups:
+            for param in group['params']:
+                current_params[id(param)] = param
+         
+        # Load state for matching parameters
+        for param_id, param_state in saved_state.items():
+            if param_id in current_params:
+                optimizer.state[current_params[param_id]] = param_state
+                
+        return optimizer
+
     def load_networks(self, exp, epoch, strict=True, restart_optim=False, load_shape_branch=True):
+        print("Loading Checkpoint", os.path.join(exp, 'checkpoint', 'model{}.pth'.format(epoch)))
         ckpt = torch.load(os.path.join(exp, 'checkpoint', 'model{}.pth'.format(epoch)))
         diff_state_dict = {}
         diff_state_dict['opt'] = ckpt.pop('opt')
@@ -72,14 +102,32 @@ class SGDiff(nn.Module):
 
         ckpt.pop('vqvae', None)
         ckpt.pop('shape_df', None)
-        self.diff.load_state_dict(ckpt, strict=strict) # layout branch only
+        result = self.diff.load_state_dict(ckpt, strict=strict) # layout branch only
+        
+        if not strict:
+            # Print missing and unexpected keys
+            missing_keys = result.missing_keys
+            unexpected_keys = result.unexpected_keys
+            if missing_keys:
+                print("Missing keys (expected by the model but not found in the checkpoint):")
+                for key in missing_keys:
+                    print(f"  - {key}")
+            if unexpected_keys:
+                print("\nUnexpected keys (found in the checkpoint but not used by the model):")
+                for key in unexpected_keys:
+                    print(f"  - {key}")
+        
         print(colored('[*] GCN and layout branch has successfully been restored from: %s' % os.path.join(exp, 'checkpoint',
                                                                                     'model{}.pth'.format(epoch)),
                       'blue'))
 
         if not restart_optim:
+            # print(diff_state_dict['opt'])
+            print(self.counter, "<--- self.counter")
             import torch.optim as optim
-            self.diff.optimizerFULL.load_state_dict(diff_state_dict['opt'])
+            # state_dict_result = self.diff.optimizerFULL.load_state_dict(diff_state_dict['opt'])
+            self.diff.optimizerFULL = self.load_optimizer_state_dict_non_strict(optimizer=self.diff.optimizerFULL, state_dict=diff_state_dict['opt'])
+
             self.diff.scheduler = optim.lr_scheduler.LambdaLR(self.diff.optimizerFULL, lr_lambda=self.diff.lr_lambda,
                                                     last_epoch=int(self.counter - 1))
 

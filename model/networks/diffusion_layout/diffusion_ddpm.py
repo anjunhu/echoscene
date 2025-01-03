@@ -1,3 +1,5 @@
+import sys
+import itertools
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
@@ -11,7 +13,7 @@ from tqdm.auto import tqdm
 import json
 import torch.nn.functional as F
 from einops import rearrange, reduce
-from helpers.util import preprocess_angle2sincos,descale_box_params,postprocess_sincos2arctan
+from helpers.util import preprocess_angle2sincos,descale_box_params,postprocess_sincos2arctan, params_to_8points_3dfront
 # from helpers.threedfront_box3d import bbox_overlaps_3d, axis_aligned_bbox_overlaps_3d
 
 def norm(v, f):
@@ -439,13 +441,49 @@ class GaussianDiffusion:
         else:
             loss_iou_valid = torch.zeros(len(denoise_out)).to(data_t.device)
             bbox_iou_valid = torch.zeros(len(denoise_out)).to(data_t.device)
-        return loss.mean() + loss_iou_valid.mean(), {
+            
+        boxes_pred, angles_pred = denoise_out[:, 0:self.size_dim + self.translation_dim], denoise_out[:, self.size_dim + self.translation_dim:]
+        angles_pred = postprocess_sincos2arctan(angles_pred) / np.pi * 180
+        boxes_pred_den = descale_box_params(boxes_pred, file="/home/ubuntu/datasets/FRONT/centered_bounds_all_trainval.txt")
+        box_and_angle = torch.cat([boxes_pred_den.float(), angles_pred.float()], dim=1)
+        boxes_in_scene = []
+        for i in range(box_and_angle.shape[0]):
+            box_eight_points = params_to_8points_3dfront(box_and_angle[j], degrees=True)
+            print(box_eight_points.shape)
+            boxes_in_scene.append(box_eight_points)
+        
+        boxes_in_scene = torch.stack(boxes_in_scene)  # Shape: [N, 8, 3]
+        print(boxes_in_scene.shape)
+
+        # Initialize the loss_separate
+        loss_separate = 0.0
+
+        # Iterate over all pairs of bounding boxes in the batch
+        for i, j in itertools.combinations(range(boxes_in_scene.shape[0]), 2):
+            box1 = boxes_in_scene[i]  # Shape: [8, 3]
+            box2 = boxes_in_scene[j]  # Shape: [8, 3]
+
+            # Compute axis-aligned overlap along x, y, z
+            min1, max1 = box1.min(dim=0)[0], box1.max(dim=0)[0]
+            min2, max2 = box2.min(dim=0)[0], box2.max(dim=0)[0]
+
+            overlap = torch.clamp(torch.min(max1, max2) - torch.max(min1, min2), min=0)  # Overlap along each axis
+            overlap_volume = overlap.prod()  # Compute volume of overlap
+
+            # Add overlap volume to the loss
+            loss_separate += overlap_volume
+
+        # Normalize the loss_separate by the number of boxes in the scene
+        loss_separate = loss_separate / boxes_in_scene.shape[0]
+        
+        return loss.mean() + loss_iou_valid.mean() + loss_separate.mean(), {
             'loss.bbox': loss_bbox.mean(),
             'loss.trans': loss_trans.mean(),
             'loss.size': loss_size.mean(),
             'loss.angle': loss_angle.mean(),
             'loss.liou': loss_iou_valid.mean(),
             'loss.bbox_iou': bbox_iou_valid.mean(),
+            'loss.separate': loss_separate.mean(),
         }
 
     def diffusion_loss(self, data_t, t, denoise_out, target, scene_ids):
@@ -467,13 +505,56 @@ class GaussianDiffusion:
             loss_iou_valid = torch.zeros(len(denoise_out)).to(data_t.device)
             bbox_iou_valid = torch.zeros(len(denoise_out)).to(data_t.device)
 
-        return losses.mean() + loss_iou_valid.mean(), {
+        print("denoise_out[:, 0:self.bbox_dim].shape", denoise_out[:, 0:self.bbox_dim].shape)
+        
+        boxes_pred, angles_pred = denoise_out[:, 0:self.size_dim + self.translation_dim], denoise_out[:, self.size_dim + self.translation_dim:]
+        angles_pred = postprocess_sincos2arctan(angles_pred) / np.pi * 180
+        boxes_pred_den = descale_box_params(boxes_pred, file="/home/ubuntu/datasets/FRONT/centered_bounds_all_trainval.txt")
+        box_and_angle = torch.cat([boxes_pred_den.float(), angles_pred.float()], dim=1)
+        boxes_in_scene = []
+        for i in range(box_and_angle.shape[0]):
+            box_eight_points = params_to_8points_3dfront(box_and_angle[i], degrees=True, use_numpy=False) # [8, 3]
+            boxes_in_scene.append(box_eight_points)
+        
+        boxes_in_scene = torch.stack(boxes_in_scene)  # Shape: [N, 8, 3]
+        print(boxes_in_scene.grad)
+
+        # Initialize a list for storing overlap penalties
+        overlaps = []
+
+        # Iterate over all pairs of bounding boxes in the batch
+        for i, j in itertools.combinations(range(boxes_in_scene.shape[0]), 2):
+            box1 = boxes_in_scene[i]  # Shape: [8, 3]
+            box2 = boxes_in_scene[j]  # Shape: [8, 3]
+
+            # Compute axis-aligned overlap along x, y, z
+            min1, max1 = box1.min(dim=0)[0], box1.max(dim=0)[0]
+            min2, max2 = box2.min(dim=0)[0], box2.max(dim=0)[0]
+
+            overlap = torch.clamp(torch.min(max1, max2) - torch.max(min1, min2), min=0)  # Overlap along each axis
+            overlap_volume = overlap.prod()  # Compute volume of overlap
+
+            # Append overlap to the list
+            overlaps.append(overlap_volume)
+
+        # Stack overlaps and compute the total overlap loss
+        if overlaps:
+            overlaps = torch.stack(overlaps)  # Convert list to tensor
+            loss_separate = overlaps.sum() / boxes_in_scene.shape[0]  # Normalize by number of boxes
+        else:
+            loss_separate = torch.tensor(0.0, device=data_t.device, requires_grad=True)  # Ensure grad compatibility
+
+        print(loss_separate)
+        print(loss_separate.grad)
+        
+        return losses.mean() + loss_iou_valid.mean() + loss_separate.mean(), {
             'loss.bbox': loss_bbox.mean(),
             'loss.trans': loss_trans.mean(),
             'loss.size': loss_size.mean(),
             'loss.angle': loss_angle.mean(),
             'loss.liou': loss_iou_valid.mean(),
             'loss.bbox_iou': bbox_iou_valid.mean(),
+            'loss.separate': loss_separate.mean(),
         }
 
     def p_losses(self, denoise_fn, data_start, obj_embed, triples, t, condition_cross=None, scene_ids=None):
@@ -604,6 +685,7 @@ class DiffusionPoint(nn.Module):
         assert len(t) == B
 
         loss, loss_dict = self.diffusion.p_losses(self._denoise, data, obj_embed, triples=preds, t=t, condition_cross=condition_cross, scene_ids=scene_ids)
+        print(loss_dict["loss.separate"])
         assert t.shape == torch.Size([B])
         return loss, loss_dict
     

@@ -45,10 +45,11 @@ def load_ckpt(ckpt):
     return state_dict
 
 class ThreedFrontDatasetSceneGraph(data.Dataset):
-    def __init__(self, root, root_3dfront='', split='train', shuffle_objs=False, pass_scan_id=False, use_SDF=False,
+    def __init__(self, root, root_3dfront='', split='test', box_json_file='obj_boxes_all_test.json', rel_json_file='relationships_all_test.json',
+                 shuffle_objs=False, pass_scan_id=False, use_SDF=False,
                  use_scene_rels=False, data_len=None, with_changes=True, scale_func='diag', eval=False,
                  eval_type='addition', with_CLIP=False, bin_angle=False,
-                 seed=True, large=False, recompute_feats=False, recompute_clip=False,
+                 seed=True, large=False, recompute_feats=True, recompute_clip=True,
                  room_type='bedroom'):
 
         self.room_type = room_type
@@ -82,8 +83,8 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
         self.vocab = {}
         with open(os.path.join(self.root, 'classes_{}.txt'.format(self.room_type)), "r") as f:
             self.vocab['object_idx_to_name'] = f.readlines()
-        # with open(os.path.join(self.root, 'classes_all.txt'), "r") as f:
-        #     self.vocab['object_idx_to_name'] = f.readlines()
+        with open(os.path.join(self.root, 'classes_all.txt'), "r") as f:
+            self.vocab['object_idx_to_name'] = f.readlines()
         with open(os.path.join(self.root, 'relationships.txt'), "r") as f:
             self.vocab['pred_idx_to_name'] = ['in\n']
             self.vocab['pred_idx_to_name']+=f.readlines()
@@ -94,12 +95,15 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
         self.relationships_dict_r = dict(zip(self.relationships_dict.values(), self.relationships_dict.keys()))
 
         self.box_normalized_stats = os.path.join(self.root, 'centered_bounds_{}_trainval.txt'.format(self.room_type)) # always use this
-        if split == 'train_scans': # training set
+        if split == 'trainval': # training set
             self.rel_json_file = os.path.join(self.root, 'relationships_{}_trainval.json'.format(self.room_type))
             self.box_json_file = os.path.join(self.root, 'obj_boxes_{}_trainval.json'.format(self.room_type))
-        else: # test set
+        elif split == 'test': # test set
             self.rel_json_file = os.path.join(self.root, 'relationships_{}_test.json'.format(self.room_type))
             self.box_json_file = os.path.join(self.root, 'obj_boxes_{}_test.json'.format(self.room_type))
+        else:
+            self.rel_json_file = os.path.join(self.root, rel_json_file)
+            self.box_json_file = os.path.join(self.root, box_json_file)
 
 
         self.relationship_json, self.objs_json, self.tight_boxes_json = \
@@ -238,10 +242,6 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
 
         # instance2label, the whole instance ids in this scene e.g. {1: 'floor', 2: 'wall', 3: 'picture', 4: 'picture'}
         instance2label = self.objs_json[scan_id]
-        random_replacements = ['panda', 'spaceship', 'bunny', 'dragon', 'teapot', 'sphere', 'camel', 'cube', 'spaghetti']
-        unique_values = set(instance2label.values())
-        print(unique_values)
-        instance2label_rand = {label: random.choice(random_replacements) for label in unique_values}
         keys = list(instance2label.keys())
 
         if self.shuffle_objs:
@@ -284,10 +284,9 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
                 scene_class_id_grained = self.fine_grained_classes[scene_instance_class]
                 scene_instance_class = self.mapping_full2simple[scene_instance_class]
                 scene_class_id = self.classes[scene_instance_class]
-                # print(scene_class_id, scene_instance_class, scene_class_id_grained)
+
             else:
                 scene_class_id = self.classes[scene_instance_class] # class id in the entire dataset ids
-                # print(scene_class_id)
 
             instance2mask[scene_instance_id] = counter + 1
             counter += 1
@@ -335,8 +334,7 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
                 if subject >= 0 and object >= 0:
                     triples.append([subject, predicate, object])
                     if not self.large:
-                        words.append(instance2label_rand[instance2label[r[0]]] + ' ' + r[3] + ' ' + instance2label_rand[instance2label[r[1]]])
-                        # words.append(self.mapping_full2simple[instance2label[r[0]]] + ' ' + r[3] + ' ' + self.mapping_full2simple[instance2label[r[1]]])
+                        words.append(self.mapping_full2simple[instance2label[r[0]]] + ' ' + r[3] + ' ' + self.mapping_full2simple[instance2label[r[1]]])
                     else:
                         words.append(instance2label[r[0]]+' '+r[3]+' '+instance2label[r[1]]) # TODO check
             else:
@@ -347,9 +345,7 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
             scene_idx = len(cat_ids)
             for i, ob in enumerate(cat_ids):
                 triples.append([i, 0, scene_idx])
-                # words.append(self.get_key(self.classes, ob) + ' ' + 'in' + ' ' + 'room')
-                # words.append(instance2label_rand[self.get_key(self.classes, ob)] + ' ' + 'in' + ' ' + 'room')
-                words.append(list(instance2label_rand.values())[i%len(instance2label_rand)] + ' ' + 'in' + ' ' + 'room')
+                words.append(self.get_key(self.classes, ob) + ' ' + 'in' + ' ' + 'room')
             cat_ids.append(0)
             cat_ids_grained.append(0)
             # dummy scene box
@@ -357,32 +353,31 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
             if self.use_SDF:
                 obj_sdf_list.append(torch.zeros((1, self.sdf_res, self.sdf_res, self.sdf_res))) # _scene_
 
-        # if self.with_CLIP:
-        #     # If precomputed features exist, we simply load them
-        #     # print(self.clip_feats_path)
-        #     if os.path.exists(self.clip_feats_path):
-        #         clip_feats_dic = pickle.load(open(self.clip_feats_path, 'rb'))
+        if self.with_CLIP:
+            # If precomputed features exist, we simply load them
+            if os.path.exists(self.clip_feats_path):
+                clip_feats_dic = pickle.load(open(self.clip_feats_path, 'rb'))
 
-        #         clip_feats_ins = clip_feats_dic['instance_feats']
-        #         clip_feats_order = np.asarray(clip_feats_dic['instance_order'])
-        #         ordered_feats = []
-        #         if len(clip_feats_ins) - len(clip_feats_order) == 1:  # there is a _scene_ inside the file
-        #             for inst in instances_order:
-        #                 clip_feats_in_instance = inst == clip_feats_order
-        #                 ordered_feats.append(clip_feats_ins[:-1][clip_feats_in_instance])
-        #         else:
-        #             for inst in instances_order:
-        #                 clip_feats_in_instance = inst == clip_feats_order
-        #                 ordered_feats.append(clip_feats_ins[clip_feats_in_instance])
-        #         if self.use_scene_rels:
-        #             ordered_feats.append(clip_feats_ins[-1][np.newaxis,:]) # should be room's feature
-        #         clip_feats_ins = list(np.concatenate(ordered_feats, axis=0))
-        #         clip_feats_rel = clip_feats_dic['rel_feats']
+                clip_feats_ins = clip_feats_dic['instance_feats']
+                clip_feats_order = np.asarray(clip_feats_dic['instance_order'])
+                ordered_feats = []
+                if len(clip_feats_ins) - len(clip_feats_order) == 1:  # there is a _scene_ inside the file
+                    for inst in instances_order:
+                        clip_feats_in_instance = inst == clip_feats_order
+                        ordered_feats.append(clip_feats_ins[:-1][clip_feats_in_instance])
+                else:
+                    for inst in instances_order:
+                        clip_feats_in_instance = inst == clip_feats_order
+                        ordered_feats.append(clip_feats_ins[clip_feats_in_instance])
+                if self.use_scene_rels:
+                    ordered_feats.append(clip_feats_ins[-1][np.newaxis,:]) # should be room's feature
+                clip_feats_ins = list(np.concatenate(ordered_feats, axis=0))
+                clip_feats_rel = clip_feats_dic['rel_feats']
 
         output = {}
         # if features are requested but the files don't exist, we run all loaded cats and triples through clip
         # to compute them and then save them for future usage
-        if self.with_CLIP: #and (not os.path.exists(self.clip_feats_path) or clip_feats_ins is None) and self.cond_model is not None:
+        if self.with_CLIP and (not os.path.exists(self.clip_feats_path) or clip_feats_ins is None) and self.cond_model is not None:
             num_cat = len(cat_ids)
             feats_rel = {}
             obj_cat = []
@@ -393,10 +388,8 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
                     obj_cat.pop()
                     obj_cat.append('room') # TODO check
                 text_obj = clip.tokenize(obj_cat).to('cuda')
-                # print(obj_cat)
                 feats_ins = self.cond_model.encode_text(text_obj).detach().cpu().numpy()
                 text_rel = clip.tokenize(words).to('cuda')
-                # print(words)
                 rel = self.cond_model.encode_text(text_rel).detach().cpu().numpy()
                 for i in range(len(words)):
                     feats_rel[words[i]] = rel[i]
@@ -405,7 +398,6 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
             clip_feats_in['instance_feats'] = feats_ins
             clip_feats_in['instance_order'] = instances_order # this doesn't include room (_scene_)
             clip_feats_in['rel_feats'] = feats_rel
-            # print(instances_order)
             path = os.path.join(self.clip_feats_path)
             if self.recompute_clip:
                 path = path[:-3]
@@ -429,7 +421,6 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
             if clip_feats_rel != None:
                 for word in words:
                     clip_feats_rel_new.append(clip_feats_rel[word])
-                    # print(clip_feats_rel_new)
                 output['encoder']['rel_feats'] = clip_feats_rel_new
 
         output['manipulate'] = {}
@@ -758,8 +749,8 @@ class ThreedFrontDatasetSceneGraph(data.Dataset):
 
 if __name__ == "__main__":
     dataset = ThreedFrontDatasetSceneGraph(
-        root="/media/ymxlzgy/Data/Dataset/FRONT",
-        split='val_scans',
+        root="/home/ubuntu/datasets/FRONT",
+        split='test',
         shuffle_objs=True,
         use_SDF=False,
         use_scene_rels=True,

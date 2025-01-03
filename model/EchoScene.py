@@ -1,3 +1,5 @@
+import sys
+import time
 import random
 import torch.nn as nn
 import torch.optim as optim
@@ -13,7 +15,7 @@ from omegaconf import OmegaConf
 
 class Sg2ScDiffModel(nn.Module):
     def __init__(self, vocab, diff_opt, diffusion_bs=8, embedding_dim=128, batch_size=32,
-                 gconv_pooling='avg', gconv_num_layers=5,
+                 gconv_pooling='avg', gconv_num_layers=5, use_obj_embeddings_adapters=True,
                  mlp_normalization='none',
                  separated=False,
                  replace_latent=False,
@@ -33,19 +35,24 @@ class Sg2ScDiffModel(nn.Module):
         add_dim = 0
         if self.clip:
             add_dim = 512
-        self.obj_classes_grained = list(set(vocab['object_idx_to_name_grained']))
         self.edge_list = list(set(vocab['pred_idx_to_name']))
+        self.obj_classes_grained = list(set(vocab['object_idx_to_name_grained']))
         self.obj_classes_list = list(set(vocab['object_idx_to_name']))
         self.classes = dict(zip(sorted(self.obj_classes_list),range(len(self.obj_classes_list))))
         self.classes_r = dict(zip(self.classes.values(), self.classes.keys()))
         num_objs = len(self.obj_classes_list)
         num_preds = len(self.edge_list)
+        print(num_objs, num_preds)
 
         # build graph encoder and manipulator
         self.obj_embeddings_ec = nn.Embedding(num_objs + 1, gconv_dim * 2)
         self.pred_embeddings_ec = nn.Embedding(num_preds, gconv_dim * 2)
         self.obj_embeddings_dc = nn.Embedding(num_objs + 1, gconv_dim * 2) # TODO is this necessary?
         self.pred_embeddings_man_dc = nn.Embedding(num_preds, gconv_dim * 2)
+        self.use_obj_embeddings_adapters = use_obj_embeddings_adapters
+        if use_obj_embeddings_adapters:
+            self.obj_embeddings_ec_adapter = nn.Linear(gconv_dim * 2 + add_dim, gconv_dim * 2 + add_dim)
+            self.obj_embeddings_dc_adapter = nn.Linear(gconv_dim * 2 + add_dim, gconv_dim * 2 + add_dim) 
 
         self.out_dim_ini_encoder = gconv_dim * 2 + add_dim
         gconv_kwargs_ec = {
@@ -128,10 +135,24 @@ class Sg2ScDiffModel(nn.Module):
             return self.lr_evo[2] / self.lr_init
 
     def optimizer_ini(self):
-        gcn_layout_df_params = [p for p in self.parameters() if p.requires_grad == True]
+        gcn_layout_df_params = [p for name, p in self.named_parameters() if p.requires_grad == True and "obj_embeddings_ec_adapter" in name]
         shape_df_params = self.ShapeDiff.trainable_params
-        trainable_params = gcn_layout_df_params + shape_df_params
-        self.optimizerFULL = optim.AdamW(trainable_params, lr=1e-4)
+        trainable_params = gcn_layout_df_params #+ shape_df_params
+        
+        print("GCN Layout Diff Params:")
+        for name, param in self.named_parameters():
+            ### linearprobe: obj_embeddings_ec_adapter
+            ### linearprobe: gconv_net_ec
+            if param.requires_grad and "obj_embeddings_ec_adapter" in name:
+                print(f">>>> Tunable Param Name: {name}, Size: {tuple(param.size())}")
+                time.sleep(1)
+
+        # print("\nShape Diff Trainable Params:")
+        # for name, param in shape_df_params:
+        #     if param.requires_grad:
+        #         print(f"Name: {name}, Size: {tuple(param.size())}")
+        
+        self.optimizerFULL = optim.AdamW(trainable_params, lr=1e-5)
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizerFULL, lr_lambda=self.lr_lambda)
         self.optimizers = [self.optimizerFULL]
 
@@ -147,15 +168,19 @@ class Sg2ScDiffModel(nn.Module):
         s, p, o = [x.squeeze(1) for x in [s, p, o]]  # Now have shape (T,)
         edges = torch.stack([s, o], dim=1)  # Shape is (T, 2)
 
-        obj_embed = self.obj_embeddings_ec(objs)
+        obj_embed = self.obj_embeddings_ec(torch.ones_like(objs))
+        obj_embed = torch.randn_like(obj_embed)
         pred_embed = self.pred_embeddings_ec(p)
-        print("Sg2ScDiffModel.init_encoder\nobj_embed, pred_embed", obj_embed.shape, pred_embed.shape)
+        print("RANDOMIZING... Sg2ScDiffModel.init_encoder\nobj_embed, pred_embed", obj_embed.shape, pred_embed.shape)
         
         if self.clip:
             obj_embed = torch.cat([enc_text_feat, obj_embed], dim=1)
             pred_embed = torch.cat([enc_rel_feat, pred_embed], dim=1)
         print("Sg2ScDiffModel.init_encoder\nenc_text_feat, enc_rel_feat", enc_text_feat.shape, enc_rel_feat.shape)
 
+        if self.use_obj_embeddings_adapters: 
+            print("Using Linear Adapter!")
+            obj_embed = self.obj_embeddings_ec_adapter(obj_embed)
         latent_obj_f, latent_pred_f = self.gconv_net_ec(obj_embed, pred_embed, edges)
         print("Sg2SCDiffModel.init_encoder\nlatent_obj_f, latent_pred_f", latent_obj_f.shape,  latent_pred_f.shape)
 
@@ -385,8 +410,7 @@ class Sg2ScDiffModel(nn.Module):
         self.LayoutDiff.set_requires_grad([self.LayoutDiff.df], requires_grad=True)
         Layout_loss, Layout_loss_dict = self.LayoutDiff.forward()
 
-
-        loss_dict = {**Shape_loss_dict, **Layout_loss_dict}
+        loss_dict = {**Layout_loss_dict}
 
         return obj_selected, Shape_loss, Layout_loss, loss_dict
 

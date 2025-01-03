@@ -1,0 +1,120 @@
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.96 & Ta/Sh: 0.87
+means of mean: 0.96
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.94 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.93
+means of mean: 0.95
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 0.97 & F/B: 1.00 & Bi/Sm: 0.94 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.57 & Symm: nan. Total: &0.93
+means of mean: 0.95
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 0.97 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.92
+means of mean: 0.94
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.93
+means of mean: 0.95
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 0.97 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.92
+means of mean: 0.94
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.93
+means of mean: 0.95
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 0.97 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.92
+means of mean: 0.94
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 0.97 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.92
+means of mean: 0.94
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.87 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.93
+means of mean: 0.95
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.93 & Ta/Sh: 0.85 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.92
+means of mean: 0.94
+Geometry Name: geometry_10 is not a PointCloud.
+Geometry Name: geometry_11
+Colors:
+[]
+Geometry Name: geometry_12 is not a PointCloud.
+Geometry Name: geometry_13
+Colors:
+[]
+acc & L/R: 1.00 & F/B: 1.00 & Bi/Sm: 0.94 & Ta/Sh: 0.85 & Stand: 1.00 & Close: 0.43 & Symm: nan. Total: &0.93
+means of mean: 0.95
